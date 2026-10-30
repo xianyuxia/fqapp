@@ -40,6 +40,8 @@ import 'player/player_toast.dart';
 import 'player/player_video_layout.dart';
 import 'player/story_seek_bar.dart';
 
+part 'video_player_keyboard.dart';
+
 // Note: 移除短剧互动入口的范围见
 // .agents/notes/implemented/simplification/2026-09-26-playlet-social-controls.md
 // Note: 截图形态、视频底边定位与触区取舍见
@@ -530,12 +532,6 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
     return width > 0 && height > 0;
   }
 
-  bool get _overlayOpen => _modalOpen || widget.interactionBlocked;
-  bool get _playbackRequested =>
-      widget.playing ||
-      ((widget.player?.playWhenReady ?? false) &&
-          !(widget.player?.completed ?? false));
-
   Size get _videoSize => Size(
     (widget.player?.videoWidth ?? 0).toDouble(),
     (widget.player?.videoHeight ?? 0).toDouble(),
@@ -582,6 +578,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
   @override
   void initState() {
     super.initState();
+    FocusManager.instance.addEarlyKeyEventHandler(_handlePlaybackKey);
     _pages = PageController(initialPage: widget.currentIndex);
     _panel.addListener(_panelChanged);
     _listenToPosition();
@@ -710,6 +707,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
 
   @override
   void dispose() {
+    FocusManager.instance.removeEarlyKeyEventHandler(_handlePlaybackKey);
     WidgetsBinding.instance.removeObserver(this);
     _hideTimer?.cancel();
     _doubleTapGuard?.cancel();
