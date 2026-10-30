@@ -417,7 +417,7 @@ class _FqAppState extends State<FqApp> {
                         ),
                       );
                     },
-                    title: '什锦铺',
+                    title: 'fqappX',
                     debugShowCheckedModeBanner: false,
                     // OLED 纯黑只在深色下生效（浅色时 createTheme 直接忽略）。
                     theme: _theme(
