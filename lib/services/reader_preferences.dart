@@ -9,6 +9,8 @@ enum ReaderTitleAlignment { start, center }
 
 enum ReaderPageMode { paged, scroll }
 
+enum ReaderScrollChapterMode { replace, joined }
+
 /// Compact mode keeps one footer; detailed mode also shows book/chapter data.
 /// Note: 兼容旧开关的迁移见 .agents/notes/implemented/feature/2026-10-15-reader-info-modes.md
 enum ReaderInfoMode { hidden, compact, detailed }
@@ -47,6 +49,7 @@ class ReaderPreferences {
   static const _listeningFollowKey = 'reader_listening_follow';
   static const _narrationHighlightKey = 'reader_narration_highlight';
   static const _continuousReadingKey = 'reader_continuous_reading';
+  static const _scrollChapterModeKey = 'reader_scroll_chapter_mode';
   static const _einkRefreshIntervalKey = 'reader_eink_refresh_interval';
   static const _instantSwipeTurnKey = 'reader_instant_swipe_turn';
   static const _tapLeftTurnsNextKey = 'reader_tap_left_turns_next';
@@ -88,6 +91,7 @@ class ReaderPreferences {
   /// 滚动模式连续阅读：到底继续下拉进入下一章。默认开启。
   /// 普通分页始终直接跨章，不受这个滚动手势开关影响。
   final bool continuousReading;
+  final ReaderScrollChapterMode scrollChapterMode;
 
   /// 墨水屏整屏刷新间隔（页）：翻够这么多页调用一次厂商 EPD 全刷压残影。
   /// 0 表示关闭。默认 10 页，只在设备提供海信 EPD 接口时才会真正触发。
@@ -134,6 +138,7 @@ class ReaderPreferences {
     this.listeningFollow = true,
     this.narrationHighlight = true,
     this.continuousReading = true,
+    this.scrollChapterMode = ReaderScrollChapterMode.replace,
     this.einkRefreshInterval = 10,
     this.instantSwipeTurn = false,
     this.tapLeftTurnsNext = false,
@@ -169,6 +174,7 @@ class ReaderPreferences {
     bool? listeningFollow,
     bool? narrationHighlight,
     bool? continuousReading,
+    ReaderScrollChapterMode? scrollChapterMode,
     int? einkRefreshInterval,
     bool? instantSwipeTurn,
     bool? tapLeftTurnsNext,
@@ -207,13 +213,12 @@ class ReaderPreferences {
       listeningFollow: listeningFollow ?? this.listeningFollow,
       narrationHighlight: narrationHighlight ?? this.narrationHighlight,
       continuousReading: continuousReading ?? this.continuousReading,
-      einkRefreshInterval:
-          einkRefreshInterval ?? this.einkRefreshInterval,
+      scrollChapterMode: scrollChapterMode ?? this.scrollChapterMode,
+      einkRefreshInterval: einkRefreshInterval ?? this.einkRefreshInterval,
       instantSwipeTurn: instantSwipeTurn ?? this.instantSwipeTurn,
       tapLeftTurnsNext: tapLeftTurnsNext ?? this.tapLeftTurnsNext,
       tapZones: tapZones ?? this.tapZones,
-      showParagraphBubbles:
-          showParagraphBubbles ?? this.showParagraphBubbles,
+      showParagraphBubbles: showParagraphBubbles ?? this.showParagraphBubbles,
     ).normalized();
   }
 
@@ -253,6 +258,7 @@ class ReaderPreferences {
       listeningFollow: listeningFollow,
       narrationHighlight: narrationHighlight,
       continuousReading: continuousReading,
+      scrollChapterMode: scrollChapterMode,
       einkRefreshInterval: einkRefreshInterval.clamp(0, 100),
       instantSwipeTurn: instantSwipeTurn,
       tapLeftTurnsNext: tapLeftTurnsNext,
@@ -312,11 +318,14 @@ class ReaderPreferences {
           .round()
           .clamp(3, 60),
       listeningFollow: _boolean(preferences, _listeningFollowKey) ?? true,
-      narrationHighlight:
-          _boolean(preferences, _narrationHighlightKey) ?? true,
+      narrationHighlight: _boolean(preferences, _narrationHighlightKey) ?? true,
       continuousReading: _boolean(preferences, _continuousReadingKey) ?? true,
-      einkRefreshInterval:
-          (_number(preferences, _einkRefreshIntervalKey) ?? 10).round(),
+      scrollChapterMode: ReaderScrollChapterMode.values.firstWhere(
+        (mode) => mode.name == preferences.get(_scrollChapterModeKey),
+        orElse: () => ReaderScrollChapterMode.replace,
+      ),
+      einkRefreshInterval: (_number(preferences, _einkRefreshIntervalKey) ?? 10)
+          .round(),
       instantSwipeTurn: _boolean(preferences, _instantSwipeTurnKey) ?? false,
       tapLeftTurnsNext: _boolean(preferences, _tapLeftTurnsNextKey) ?? false,
       tapZones: _tapZones(preferences),
@@ -368,20 +377,18 @@ class ReaderPreferences {
       preferences.setBool(_listeningFollowKey, value.listeningFollow),
       preferences.setBool(_narrationHighlightKey, value.narrationHighlight),
       preferences.setBool(_continuousReadingKey, value.continuousReading),
-      preferences.setInt(
-        _einkRefreshIntervalKey,
-        value.einkRefreshInterval,
+      preferences.setString(
+        _scrollChapterModeKey,
+        value.scrollChapterMode.name,
       ),
+      preferences.setInt(_einkRefreshIntervalKey, value.einkRefreshInterval),
       preferences.setBool(_instantSwipeTurnKey, value.instantSwipeTurn),
       preferences.setBool(_tapLeftTurnsNextKey, value.tapLeftTurnsNext),
       preferences.setStringList(
         _tapZonesKey,
         encodeReaderTapZones(value.tapZones),
       ),
-      preferences.setBool(
-        _showParagraphBubblesKey,
-        value.showParagraphBubbles,
-      ),
+      preferences.setBool(_showParagraphBubblesKey, value.showParagraphBubbles),
     ]);
   }
 
@@ -397,9 +404,7 @@ class ReaderPreferences {
 
   /// 九宫格加载：无保存值时回落默认；旧单手开关开着且无九宫格时，
   /// 迁移为单手九宫格（保持旧用户行为不变）。
-  static List<ReaderTapZoneAction> _tapZones(
-    SharedPreferences preferences,
-  ) {
+  static List<ReaderTapZoneAction> _tapZones(SharedPreferences preferences) {
     final raw = preferences.getStringList(_tapZonesKey);
     if (raw == null) {
       if (_boolean(preferences, _tapLeftTurnsNextKey) == true) {

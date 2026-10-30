@@ -8,6 +8,7 @@ import '../../services/reader_device.dart';
 import '../../services/reader_preferences.dart';
 import '../../services/reader_tap_zones.dart';
 import 'reader_tap_zone_sheet.dart';
+import 'reader_scroll_mode_setting.dart';
 import 'reader_theme.dart';
 
 /// The reader typesetting bottom sheet, laid out after the official panel
@@ -223,12 +224,7 @@ class _ReaderAppearanceSheetState extends State<ReaderAppearanceSheet> {
                         // 全局墨水屏 / OLED 开启时背景跟随全局，色块仅作展示。
                         if (_backgroundLocked)
                           Padding(
-                            padding: const EdgeInsets.fromLTRB(
-                              16,
-                              0,
-                              16,
-                              12,
-                            ),
+                            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
                             child: Text(
                               widget.einkOverride
                                   ? '全局墨水屏模式已开启，背景跟随全局设置'
@@ -249,11 +245,12 @@ class _ReaderAppearanceSheetState extends State<ReaderAppearanceSheet> {
                           child: Expanded(
                             child: LayoutBuilder(
                               builder: (context, constraints) {
-                                final count =
-                                    ReaderThemePreset.values.length;
+                                final count = ReaderThemePreset.values.length;
                                 final diameter =
-                                    (constraints.maxWidth / count - 4)
-                                        .clamp(24.0, 38.0);
+                                    (constraints.maxWidth / count - 4).clamp(
+                                      24.0,
+                                      38.0,
+                                    );
                                 return Row(
                                   mainAxisAlignment:
                                       MainAxisAlignment.spaceEvenly,
@@ -278,9 +275,8 @@ class _ReaderAppearanceSheetState extends State<ReaderAppearanceSheet> {
                               min: 14,
                               max: 32,
                               format: (value) => value.round().toString(),
-                              onStep: (value) => _update(
-                                _value.copyWith(fontSize: value),
-                              ),
+                              onStep: (value) =>
+                                  _update(_value.copyWith(fontSize: value)),
                             ),
                           ),
                         ),
@@ -305,7 +301,9 @@ class _ReaderAppearanceSheetState extends State<ReaderAppearanceSheet> {
                             selected: _value.paragraphSpacing.round(),
                             format: (value) => '$value',
                             onSelected: (value) => _update(
-                              _value.copyWith(paragraphSpacing: value.toDouble()),
+                              _value.copyWith(
+                                paragraphSpacing: value.toDouble(),
+                              ),
                             ),
                           ),
                         ),
@@ -342,9 +340,7 @@ class _ReaderAppearanceSheetState extends State<ReaderAppearanceSheet> {
                                 for (final mode in ReaderPageMode.values)
                                   Expanded(
                                     child: _chip(
-                                      key: ValueKey(
-                                        'reader-mode-${mode.name}',
-                                      ),
+                                      key: ValueKey('reader-mode-${mode.name}'),
                                       label: mode == ReaderPageMode.paged
                                           ? '左右翻页'
                                           : '上下滚动',
@@ -387,9 +383,8 @@ class _ReaderAppearanceSheetState extends State<ReaderAppearanceSheet> {
                           subtitle:
                               '分页模式：滑动越过阈值直接翻页，不显示翻页过渡与动画；开启后翻页方式强制为“无”。适合墨水屏',
                           value: _value.instantSwipeTurn,
-                          onChanged: (value) => _update(
-                            _value.copyWith(instantSwipeTurn: value),
-                          ),
+                          onChanged: (value) =>
+                              _update(_value.copyWith(instantSwipeTurn: value)),
                         ),
                         _row(
                           label: '点击区域',
@@ -499,12 +494,9 @@ class _ReaderAppearanceSheetState extends State<ReaderAppearanceSheet> {
                                   Expanded(
                                     child: _chip(
                                       label: entry.value,
-                                      selected:
-                                          _value.fontWeight == entry.key,
+                                      selected: _value.fontWeight == entry.key,
                                       onTap: () => _update(
-                                        _value.copyWith(
-                                          fontWeight: entry.key,
-                                        ),
+                                        _value.copyWith(fontWeight: entry.key),
                                       ),
                                     ),
                                   ),
@@ -518,9 +510,8 @@ class _ReaderAppearanceSheetState extends State<ReaderAppearanceSheet> {
                           '听书跟随翻页',
                           subtitle: '听书页播放本章时，阅读器按播放进度自动翻页',
                           value: _value.listeningFollow,
-                          onChanged: (value) => _update(
-                            _value.copyWith(listeningFollow: value),
-                          ),
+                          onChanged: (value) =>
+                              _update(_value.copyWith(listeningFollow: value)),
                         ),
                         _toggle(
                           '朗读句高亮',
@@ -534,17 +525,21 @@ class _ReaderAppearanceSheetState extends State<ReaderAppearanceSheet> {
                           '音量键翻页',
                           subtitle: '音量下 = 下一页，音量上 = 上一页',
                           value: _value.volumeKeyTurn,
-                          onChanged: (value) => _update(
-                            _value.copyWith(volumeKeyTurn: value),
-                          ),
+                          onChanged: (value) =>
+                              _update(_value.copyWith(volumeKeyTurn: value)),
                         ),
                         _toggle(
                           '连续阅读',
-                          subtitle: '滚动到底继续下拉进入下一章；分页始终直接跨章',
+                          subtitle: '直接切章模式下，滚动到底继续拖动换章',
                           value: _value.continuousReading,
                           onChanged: (value) => _update(
                             _value.copyWith(continuousReading: value),
                           ),
+                        ),
+                        ReaderScrollModeSetting(
+                          value: _value.scrollChapterMode,
+                          onChanged: (mode) =>
+                              _update(_value.copyWith(scrollChapterMode: mode)),
                         ),
                         _toggle(
                           '段评气泡',
@@ -620,9 +615,9 @@ class _ReaderAppearanceSheetState extends State<ReaderAppearanceSheet> {
                         // counterpart (字距/标题字号/标题对齐), tucked away so the
                         // first screen stays official.
                         Theme(
-                          data: Theme.of(context).copyWith(
-                            dividerColor: Colors.transparent,
-                          ),
+                          data: Theme.of(
+                            context,
+                          ).copyWith(dividerColor: Colors.transparent),
                           child: ExpansionTile(
                             key: const ValueKey('reader-more-appearance'),
                             tilePadding: const EdgeInsets.symmetric(
@@ -778,8 +773,10 @@ class _ReaderAppearanceSheetState extends State<ReaderAppearanceSheet> {
     );
   }
 
-  Widget _optionsRow(String label, Widget chips) =>
-      _row(label: label, child: Expanded(child: chips));
+  Widget _optionsRow(String label, Widget chips) => _row(
+    label: label,
+    child: Expanded(child: chips),
+  );
 
   /// 官方 aki 背景 swatch: a 32dp circle in the theme's own background colour,
   /// the selected one wrapped in a 1.3dp accent ring (aqx selector).
@@ -806,9 +803,7 @@ class _ReaderAppearanceSheetState extends State<ReaderAppearanceSheet> {
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             border: Border.all(
-              color: selected
-                  ? preset.accentColor
-                  : Colors.transparent,
+              color: selected ? preset.accentColor : Colors.transparent,
               width: 1.3,
             ),
           ),
@@ -850,7 +845,8 @@ class _ReaderAppearanceSheetState extends State<ReaderAppearanceSheet> {
               borderRadius: BorderRadius.circular(90),
               onTap: delta < 0
                   ? value > min
-                        ? () => onStep((value + delta).clamp(min, max).toDouble())
+                        ? () =>
+                              onStep((value + delta).clamp(min, max).toDouble())
                         : null
                   : value < max
                   ? () => onStep((value + delta).clamp(min, max).toDouble())
