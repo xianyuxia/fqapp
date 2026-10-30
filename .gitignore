@@ -66,6 +66,9 @@ app.*.map.json
 *.jks
 *.keystore
 /private-backups/
+# Generated device reports and cloud authorization material remain local.
+/experiments/**/out/
+**/__pycache__/
 *.pepk
 
 # 本地工具状态与会话归档

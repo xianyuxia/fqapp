@@ -29,6 +29,8 @@ class MainActivity : FlutterActivity() {
         flutterEngine.plugins.add(SystemTtsPlugin())
         flutterEngine.plugins.add(LocalBookPickerPlugin())
         flutterEngine.plugins.add(LibraryBackupPlugin())
+        flutterEngine.plugins.add(SyncStoragePlugin())
+        flutterEngine.plugins.add(CloudLoginPlugin())
         flutterEngine.plugins.add(FanqieAccountPlugin())
         // 官方系统分享是 Intent.ACTION_SEND；没有可分享的应用时回 false。
         flutterEngine.plugins.add(SharePlugin())

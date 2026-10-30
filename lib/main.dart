@@ -1,4 +1,6 @@
 import 'services/api_client.dart';
+import 'services/sync/multi_device_sync_service.dart';
+import 'package:flutter/foundation.dart' show LicenseRegistry, LicenseEntryWithLineBreaks;
 import 'services/audio_downloader.dart';
 import 'widgets/desktop_app_frame.dart';
 import 'services/native_player.dart';
@@ -105,12 +107,19 @@ Future<void> _prepareRuntime() async {
       } catch (error, stack) {
         AppLog.w('exit', '退出前停止后端失败', error: error, stack: stack);
       }
+      await MultiDeviceSyncService.instance.shutdown();
       await Hive.close();
     };
   }
 }
 
 Future<void> _initializeLocalData() async {
+  LicenseRegistry.addLicense(() async* {
+    yield LicenseEntryWithLineBreaks(
+      ['fqappX Android sync storage'],
+      await rootBundle.loadString('assets/licenses/sync_storage.txt'),
+    );
+  });
   await Hive.initFlutter();
   // 以下初始化互相独立（各开各的 box / 各读各的配置），串行等只会把
   // 磁盘 I/O 叠加到冷启动里；并行发起，失败语义与串行时一致：必需项
@@ -170,6 +179,7 @@ Future<void> _initializeLocalData() async {
     // 听书音频离线记录箱：与短剧箱分开，同样只在就绪时才查离线命中。
     optional(HiveAudioDownloadStore.instance.warmUp),
   ]);
+  await MultiDeviceSyncService.instance.initialize();
   // 听书后台播放开关：异步读取 SharedPreferences，失败退化为默认开启。
   unawaited(AudioPreferences.instance.load());
   // 短剧「边看边往后缓存」的开关与集数：同一条装配链里读，避免播放页

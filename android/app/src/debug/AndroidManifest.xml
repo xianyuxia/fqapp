@@ -5,6 +5,7 @@
     -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <application>
+        <activity android:name="com.fqapp.fqapp.SyncStorageValidationActivity" android:exported="true"/>
         <!-- Research entry shares fqappX's package and signer; no separate test app. -->
         <activity android:name="com.wulalalala.fqappx.research.WebDavProbeActivity" android:exported="true" android:launchMode="singleTop"/>
     </application>

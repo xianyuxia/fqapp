@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import '../services/desktop_platform.dart';
+import '../services/sync/multi_device_sync_service.dart';
 // 书架页：官方免费小说书架形态的本地重设计（三 tab + 页头分层 +
 // 三档版式 + 编辑态）。设计 token、版式/排序枚举集中在
 // lib/widgets/shelf/shelf_design.dart（docs/system_design.md）。
@@ -154,6 +155,7 @@ class _LibraryPageState extends State<LibraryPage> with WidgetsBindingObserver {
     // Catch up once when returning from another tab or an opaque route.
     if (visible) {
       _load();
+      unawaited(MultiDeviceSyncService.instance.sync());
       unawaited(_refreshUpdates());
     }
   }
@@ -799,7 +801,10 @@ class _LibraryPageState extends State<LibraryPage> with WidgetsBindingObserver {
                   // 只让内容跟手横移：标题栏与工具条固定在顶上，切换后立刻
                   // 显示新的选中项。
                   child: RefreshIndicator(
-                    onRefresh: _refreshUpdates,
+                    onRefresh: () async {
+                      await MultiDeviceSyncService.instance.sync();
+                      await _refreshUpdates();
+                    },
                     child: _content(palette),
                   ),
                 ),

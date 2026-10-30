@@ -18,6 +18,8 @@
         android:fullBackupContent="@xml/backup_rules"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:networkSecurityConfig="@xml/network_security_config">
+        <activity android:name=".CloudLoginActivity" android:exported="false"
+            android:theme="@style/NormalTheme" android:windowSoftInputMode="adjustResize"/>
         <service
             android:name=".ListenKeepAliveService"
             android:exported="false"
