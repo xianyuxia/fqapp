@@ -59,7 +59,7 @@ android {
 
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.fqapp.fqapp"
+        applicationId = "com.wulalalala.fqappx"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
@@ -93,10 +93,20 @@ android {
 
     signingConfigs {
         getByName("debug") {
+            // The install-ready fqappX and full local reader must share a signer.
+            // Opt in only for this local research install, never for a public release.
+            if (providers.environmentVariable("FQAPPX_LOCAL_SIGNING").orNull == "true") {
+                storeFile = rootProject.file("../experiments/fqappx-bootstrap/out/fqappx-local.keystore")
+                storePassword = "research-only"
+                keyAlias = "research"
+                keyPassword = "research-only"
+            }
             // CI supplies an absolute path instead of relying on the runner's
             // Android user-directory defaults for debug.keystore.
-            providers.environmentVariable("FQAPP_DEBUG_KEYSTORE").orNull?.let { keystorePath ->
-                storeFile = file(keystorePath)
+            if (providers.environmentVariable("FQAPPX_LOCAL_SIGNING").orNull != "true") {
+                providers.environmentVariable("FQAPP_DEBUG_KEYSTORE").orNull?.let { keystorePath ->
+                    storeFile = file(keystorePath)
+                }
             }
         }
         if (hasReleaseSigning) {

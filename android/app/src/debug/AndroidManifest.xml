@@ -4,4 +4,8 @@
          to allow setting breakpoints, to provide hot reload, etc.
     -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <application>
+        <!-- Research entry shares fqappX's package and signer; no separate test app. -->
+        <activity android:name="com.wulalalala.fqappx.research.WebDavProbeActivity" android:exported="true" android:launchMode="singleTop"/>
+    </application>
 </manifest>
