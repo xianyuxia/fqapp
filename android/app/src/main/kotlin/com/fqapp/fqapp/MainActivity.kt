@@ -7,6 +7,25 @@ import io.flutter.embedding.engine.FlutterShellArgs
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
+    private var cloudActionsChannel: MethodChannel? = null
+
+    // Debug automation can request an official login or a synthetic validation;
+    // it cannot provide credentials, select arbitrary folders, or read records.
+    private fun pendingCloudAction(): Map<String, String>? {
+        if ((applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) == 0) return null
+        val action = intent?.getStringExtra("fqappx_cloud_action") ?: return null
+        val provider = intent?.getStringExtra("fqappx_cloud_provider") ?: return null
+        intent.removeExtra("fqappx_cloud_action")
+        intent.removeExtra("fqappx_cloud_provider")
+        if (action !in listOf("login", "validate") || provider !in listOf("quark", "tianyi", "mobile139", "ali", "weiyun", "onedrive")) return null
+        return mapOf("action" to action, "provider" to provider)
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        cloudActionsChannel?.invokeMethod("action", pendingCloudAction())
+    }
     // 音量键翻页桥。Dart 侧在阅读页且开启“音量键翻页”时通过 setEnabled(true)
     // 通知原生拦截音量键，原生 dispatchKeyEvent 吃掉按键（系统音量不再变化）并通过
     // volumeKey 回调让 Dart 翻页。该方案在原生层拦截，不受 Flutter 生命周期
@@ -31,6 +50,12 @@ class MainActivity : FlutterActivity() {
         flutterEngine.plugins.add(LibraryBackupPlugin())
         flutterEngine.plugins.add(SyncStoragePlugin())
         flutterEngine.plugins.add(CloudLoginPlugin())
+        flutterEngine.plugins.add(CloudStoragePlugin())
+        cloudActionsChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "fqapp/cloud_actions").also { channel ->
+            channel.setMethodCallHandler { call, result ->
+                if (call.method == "pending") result.success(pendingCloudAction()) else result.notImplemented()
+            }
+        }
         flutterEngine.plugins.add(FanqieAccountPlugin())
         // 官方系统分享是 Intent.ACTION_SEND；没有可分享的应用时回 false。
         flutterEngine.plugins.add(SharePlugin())

@@ -226,12 +226,22 @@ class SyncExchange {
   Future<void> publish(SyncSlot slot) async {
     final bytes = slot.encode();
     await transport.write(slot.filename, bytes);
-    final actual = await transport.read(slot.filename);
-    if (actual == null || actual.length != bytes.length) {
-      throw const SyncFailure('写入后校验失败，保留待同步状态');
+    // Some cloud lists/download links briefly expose the prior committed
+    // version. Retry reads only; never resend a write or accept stale bytes.
+    bool matches(Uint8List? actual) {
+      if (actual == null || actual.length != bytes.length) return false;
+      for (var i = 0; i < bytes.length; i++) {
+        if (bytes[i] != actual[i]) return false;
+      }
+      return true;
     }
-    for (var i = 0; i < bytes.length; i++) {
-      if (bytes[i] != actual[i]) throw const SyncFailure('写入后校验失败，保留待同步状态');
+
+    for (var attempt = 0; attempt < 5; attempt++) {
+      if (matches(await transport.read(slot.filename))) return;
+      if (attempt < 4) {
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+      }
     }
+    throw const SyncFailure('写入后校验失败，保留待同步状态');
   }
 }

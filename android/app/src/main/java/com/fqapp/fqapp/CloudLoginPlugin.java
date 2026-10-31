@@ -21,7 +21,7 @@ public final class CloudLoginPlugin implements FlutterPlugin, ActivityAware, Met
     public void onMethodCall(MethodCall call,MethodChannel.Result result){
         if(!call.method.equals("login")){result.notImplemented();return;}
         String provider=call.argument("provider");
-        if(binding==null||pending!=null||!("ali".equals(provider)||"onedrive".equals(provider))){result.error("unavailable","授权入口暂不可用",null);return;}
+        if(binding==null||pending!=null||!java.util.Arrays.asList("ali","onedrive","quark","tianyi","mobile139","weiyun").contains(provider)){result.error("unavailable","授权入口暂不可用",null);return;}
         pending=result;
         Intent intent=new Intent(binding.getActivity(),CloudLoginActivity.class).putExtra("provider",provider);
         binding.getActivity().startActivityForResult(intent,REQUEST);

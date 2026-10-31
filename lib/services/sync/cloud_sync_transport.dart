@@ -5,6 +5,8 @@ import 'dart:typed_data';
 import 'sync_document.dart';
 import 'sync_transport.dart';
 import 'weiyun_hash.dart';
+import '../platform_channel.dart';
+import 'package:flutter/services.dart';
 
 typedef SaveSyncCredentials =
     Future<void> Function(Map<String, String> updates);
@@ -19,8 +21,74 @@ SyncTransport createCloudSyncTransport(
       return WeiyunSyncTransport(config);
     case 'ali':
       return AliSyncTransport(config, save);
+    case 'quark':
+    case 'tianyi':
+    case 'mobile139':
+      return AndroidCloudSyncTransport(config, save);
     default:
       throw const SyncFailure('该服务的持续同步尚未开放，请先选 WebDAV 或已接入的服务');
+  }
+}
+
+class AndroidCloudSyncTransport implements SyncTransport {
+  AndroidCloudSyncTransport(this.config, this.save);
+  final Map<String, String> config;
+  final SaveSyncCredentials save;
+  static const channel = AppMethodChannel('fqapp/cloud_storage');
+  String? session;
+  Future<T?> call<T>(
+    String method, [
+    Map<String, dynamic> values = const {},
+  ]) async {
+    if (!Platform.isAndroid) {
+      throw const SyncFailure('这家网盘的登录和同步目前在 Android 端提供');
+    }
+    try {
+      return await channel.invokeMethod<T>(method, {
+        'session': session,
+        ...values,
+      });
+    } on PlatformException catch (error) {
+      throw SyncFailure(error.message ?? '网盘请求失败，请重新登录后再试');
+    }
+  }
+
+  @override
+  Future<void> prepare() async {
+    if (session != null) return;
+    final opened = await call<Map>('open', {
+      'provider': config['provider'],
+      'password': config['password'],
+      'forceRefresh': config['forceRefresh'] == 'true',
+    });
+    if (opened == null) throw const SyncFailure('未能创建网盘会话');
+    session = opened['session'] as String;
+    // Persist a rotated token before any folder operation can fail.
+    await save({'password': opened['credentials'] as String});
+    await call('prepare', {'folder': _folder(config)});
+  }
+
+  @override
+  Future<List<String>> list() async =>
+      (await call<List>('list') ?? []).cast<String>();
+  @override
+  Future<Uint8List?> read(String name) {
+    checkSlotName(name);
+    return call<Uint8List>('read', {'name': name});
+  }
+
+  @override
+  Future<void> write(String name, Uint8List bytes) async {
+    checkSlotName(name);
+    await call('write', {'name': name, 'bytes': bytes});
+  }
+
+  @override
+  void close() {
+    if (session != null) {
+      call('close').catchError((Object _) => null);
+      session = null;
+    }
   }
 }
 
@@ -31,6 +99,14 @@ class CloudHttp {
     String address, {
     Map<String, String> headers = const {},
     Uint8List? bytes,
+  }) => _send(method, address, headers: headers, bytes: bytes, redirects: 0);
+
+  Future<({int status, Uint8List bytes})> _send(
+    String method,
+    String address, {
+    required Map<String, String> headers,
+    Uint8List? bytes,
+    required int redirects,
   }) async {
     final uri = Uri.parse(address);
     if (uri.scheme != 'https' || uri.userInfo.isNotEmpty) {
@@ -42,6 +118,9 @@ class CloudHttp {
           .timeout(const Duration(seconds: 30));
       req.followRedirects = false;
       headers.forEach(req.headers.set);
+      if (!headers.keys.any((name) => name.toLowerCase() == 'user-agent')) {
+        req.headers.set(HttpHeaders.userAgentHeader, 'Mozilla/5.0 fqappX/1.0');
+      }
       if (bytes != null) {
         req.contentLength = bytes.length;
         req.add(bytes);
@@ -52,16 +131,30 @@ class CloudHttp {
         buffer.add(chunk);
         if (buffer.length > syncMaxBytes) throw const SyncFailure('云盘响应超过大小限制');
       }
-      // Signed file downloads may redirect to a CDN. Follow without credentials.
+      // Signed downloads also redirect when callers supplied a Referer or a
+      // file cookie. Bound the chain, and strip credentials across origins.
       if ([301, 302, 303, 307, 308].contains(response.statusCode) &&
-          method == 'GET' &&
-          headers.isEmpty) {
+          method == 'GET') {
         final next = response.headers.value('location');
         if (next != null) {
-          return await send(
+          if (redirects >= 5) throw const SyncFailure('云盘下载重定向次数过多');
+          final target = uri.resolve(next);
+          final forwarded = target.origin == uri.origin
+              ? headers
+              : {
+                  for (final entry in headers.entries)
+                    if ({
+                      'accept',
+                      'range',
+                      'referer',
+                    }.contains(entry.key.toLowerCase()))
+                      entry.key: entry.value,
+                };
+          return await _send(
             'GET',
-            uri.resolve(next).toString(),
-            headers: {'X-Fqapp-Redirect': '1'},
+            target.toString(),
+            headers: forwarded,
+            redirects: redirects + 1,
           );
         }
       }
@@ -121,6 +214,7 @@ class OneDriveSyncTransport implements SyncTransport {
   Map<String, String> get headers => {'Authorization': 'Bearer $access'};
   @override
   Future<void> prepare() async {
+    if (folderId.isNotEmpty) return;
     String refresh = config['password'] ?? '';
     try {
       final raw = jsonDecode(refresh) as Map;
@@ -133,7 +227,14 @@ class OneDriveSyncTransport implements SyncTransport {
         'server_use': 'true',
         'driver_txt': 'onedrive_pr',
       });
-      final token = await http.json('GET', url.toString());
+      final token = await http.json(
+        'GET',
+        url.toString(),
+        headers: {
+          'User-Agent': 'Mozilla/5.0 fqappX/1.0',
+          'Referer': 'https://api.oplist.org/',
+        },
+      );
       access = token['access_token'] as String? ?? '';
       refresh = token['refresh_token'] as String? ?? refresh;
       if (access.isEmpty) throw const SyncFailure('OneDrive 令牌续期失败，请重新授权');
@@ -227,7 +328,7 @@ class WeiyunSyncTransport implements SyncTransport {
   WeiyunSyncTransport(this.config);
   final Map<String, String> config;
   final http = CloudHttp();
-  String parent = '', directory = '';
+  String parent = '', directory = '', fileParent = '';
   int request = 0;
   String get token {
     final text = config['password'] ?? '';
@@ -267,9 +368,11 @@ class WeiyunSyncTransport implements SyncTransport {
       final data = Map<String, dynamic>.from(
         jsonDecode(item['text'] as String) as Map,
       );
-      if ((data['error']?.toString() ?? '').isNotEmpty ||
-          (data['code'] != null && data['code'] != 0)) {
-        throw const SyncFailure('微云操作失败，请检查 Token 和文件权限');
+      final error = data['error'];
+      final code = data['code'] == null ? 0 : int.tryParse('${data['code']}');
+      if ((error != null && error != '' && error != false && error != 0) ||
+          code != 0) {
+        throw SyncFailure('微云 $name 操作失败（服务码 ${code ?? '未知'}），请检查授权目录');
       }
       return data;
     }
@@ -278,25 +381,38 @@ class WeiyunSyncTransport implements SyncTransport {
 
   Future<List<Map<String, dynamic>>> entries({bool root = false}) async {
     final all = <Map<String, dynamic>>[];
-    for (var offset = 0; offset < 10000; offset += 200) {
+    const pageSize = 50; // Official MCP list limit.
+    for (var offset = 0; offset < 10000; offset += pageSize) {
       final r = await call('list', {
-        'limit': 200,
+        'limit': pageSize,
         'offset': offset,
         'get_type': 0,
         if (!root) 'dir_key': directory,
         if (!root) 'pdir_key': parent,
       });
       if (root) parent = r['pdir_key'] as String? ?? '';
+      if (!root &&
+          r['pdir_key'] is String &&
+          (r['pdir_key'] as String).isNotEmpty) {
+        fileParent = r['pdir_key'] as String;
+      }
       final dirs = (r['dir_list'] as List? ?? []).cast<Map>();
       final files = (r['file_list'] as List? ?? []).cast<Map>();
       all.addAll([...dirs, ...files].map((e) => Map<String, dynamic>.from(e)));
-      if (dirs.length + files.length < 200) return all;
+      final finish = r['finish_flag'];
+      if (finish == true ||
+          finish == 1 ||
+          finish == '1' ||
+          (finish == null && dirs.length + files.length < pageSize)) {
+        return all;
+      }
     }
     throw const SyncFailure('微云授权目录项目过多，请选择专用目录');
   }
 
   @override
   Future<void> prepare() async {
+    if (directory.isNotEmpty) return;
     final roots = await entries(root: true);
     final name = _folder(config);
     final existing = roots.where((e) => e['dir_name'] == name).toList();
@@ -314,11 +430,8 @@ class WeiyunSyncTransport implements SyncTransport {
   }
 
   @override
-  Future<List<String>> list() async => (await entries())
-      .map((e) => e['filename'])
-      .whereType<String>()
-      .where(syncSlotPattern.hasMatch)
-      .toList();
+  Future<List<String>> list() async =>
+      (await entries()).map((e) => e['filename']).whereType<String>().toList();
   @override
   Future<Uint8List?> read(String name) async {
     checkSlotName(name);
@@ -329,7 +442,10 @@ class WeiyunSyncTransport implements SyncTransport {
     if (matches.length > 1) throw const SyncFailure('微云产生了重名快照，暂停同步以避免覆盖');
     final r = await call('download', {
       'items': [
-        {'file_id': matches.single['file_id'], 'pdir_key': directory},
+        {
+          'file_id': matches.single['file_id'],
+          'pdir_key': fileParent.isEmpty ? directory : fileParent,
+        },
       ],
     });
     final item = (r['items'] as List).first as Map;
@@ -345,6 +461,35 @@ class WeiyunSyncTransport implements SyncTransport {
   @override
   Future<void> write(String name, Uint8List bytes) async {
     checkSlotName(name);
+    final prior = (await entries())
+        .where((entry) => entry['filename'] == name)
+        .toList();
+    if (prior.length > 1) throw const SyncFailure('微云存在重名快照，已停止替换');
+    if (prior.isNotEmpty) {
+      // The MCP upload tool has no overwrite option. SyncExchange targets only
+      // the inactive a/b snapshot, leaving the committed counterpart intact.
+      // Remove only this exact app-owned slot, without accumulating trash.
+      await call('delete', {
+        'file_list': [
+          {
+            'file_id': prior.single['file_id'],
+            'pdir_key': fileParent.isEmpty ? directory : fileParent,
+          },
+        ],
+        'delete_completely': true,
+      });
+      var removed = false;
+      for (var attempt = 0; attempt < 6; attempt++) {
+        if (!(await entries()).any((entry) => entry['filename'] == name)) {
+          removed = true;
+          break;
+        }
+        if (attempt < 5) {
+          await Future<void>.delayed(const Duration(milliseconds: 500));
+        }
+      }
+      if (!removed) throw const SyncFailure('微云旧分区尚未更新，请稍后重试');
+    }
     final hashes = weiyunUploadHashes(bytes);
     final pre = {
       'filename': name,
@@ -434,6 +579,7 @@ class AliSyncTransport implements SyncTransport {
 
   @override
   Future<void> prepare() async {
+    if (directory.isNotEmpty) return;
     Map token;
     try {
       token = jsonDecode(config['password'] ?? '') as Map;
@@ -494,12 +640,25 @@ class AliSyncTransport implements SyncTransport {
               'expire_sec': 600,
             }))['url']
             as String;
+    // These OSS V4 links sign Ali's legacy official download Referer.
+    // Substituting the current alipan.com web origin invalidates the signature.
     final r = await http.send(
       'GET',
       url,
-      headers: {'Referer': 'https://www.alipan.com/'},
+      headers: {'Referer': 'https://www.aliyundrive.com/'},
     );
-    if (r.status != 200) throw const SyncFailure('阿里快照下载失败');
+    if (r.status != 200) {
+      final diagnostic = utf8.decode(
+        r.bytes.take(4096).toList(),
+        allowMalformed: true,
+      );
+      final code = RegExp(
+        r'<Code>([A-Za-z][A-Za-z0-9_.-]{0,63})</Code>',
+      ).firstMatch(diagnostic)?.group(1);
+      throw SyncFailure(
+        '阿里快照下载失败（HTTP ${r.status}${code == null ? '' : '，$code'}）',
+      );
+    }
     return r.bytes;
   }
 

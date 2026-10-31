@@ -117,8 +117,12 @@ void main() {
           reason: 'unchanged sync does not rewrite or advance active slot',
         );
         expect(shelf.contains('book', 'one'), false);
-        expect(service.hasScheduledSync, false,
-          reason: 'applying unchanged remote values must not create an endless automatic-sync loop');
+        expect(
+          service.hasScheduledSync,
+          false,
+          reason:
+              'applying unchanged remote values must not create an endless automatic-sync loop',
+        );
         // Change the shelf while the HTTP read is in progress.
         held = Completer();
         release = Completer();
@@ -140,6 +144,62 @@ void main() {
         }
         expect(merged.visible.keys, containsAll(['s|book|one', 's|book|two']));
         expect(files.length, lessThanOrEqualTo(4));
+        // Saving a settings draft waits for an in-flight sync. A token rotated
+        // during that wait must survive the stale draft from the open form.
+        held = Completer();
+        release = Completer();
+        final pendingSync = service.sync();
+        await held.future;
+        final draft = {...service.config, 'enabled': 'false'};
+        final pendingSave = service.configure(draft);
+        await service.saveProviderCredentials('webdav', {
+          'password': 'rotated-during-settings-save',
+        });
+        release.complete();
+        await pendingSync;
+        await pendingSave;
+        expect(service.config['password'], 'rotated-during-settings-save');
+        final activeBefore = Map<String, String>.from(service.config);
+        await service.rememberProvider({
+          'provider': 'quark',
+          'endpoint': 'fqappx-sync-v1',
+          'password': 'unit-test-only-token',
+          'enabled': 'false',
+        });
+        expect(
+          service.config,
+          activeBefore,
+          reason: 'remembering another login must not switch or enable sync',
+        );
+        expect(service.configFor('quark')['password'], 'unit-test-only-token');
+        await service.saveProviderCredentials('quark', {
+          'password': 'rotated-unit-test-token',
+        });
+        expect(
+          service.configFor('quark')['password'],
+          'rotated-unit-test-token',
+        );
+        expect(service.config, activeBefore);
+        expect(
+          service.configFor('webdav')['endpoint'],
+          activeBefore['endpoint'],
+        );
+        final oldProfile = service.configFor('quark')['profile'];
+        await service.rememberProvider({
+          'provider': 'quark',
+          'endpoint': 'fqappx-sync-v1',
+          'password': 'new-account-unit-test-token',
+          'enabled': 'false',
+        });
+        await service.saveProviderCredentials('quark', {
+          'password': 'stale-old-account-refresh',
+        }, profile: oldProfile);
+        expect(
+          service.configFor('quark')['password'],
+          'new-account-unit-test-token',
+          reason:
+              'late token refresh cannot overwrite a newly authorized account',
+        );
         expect(jsonEncode(merged.toJson()).contains('password'), false);
       } finally {
         await service.shutdown();

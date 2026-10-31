@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import '../services/platform_channel.dart';
 import '../services/sync/multi_device_sync_service.dart';
+import '../services/sync/sync_transport.dart';
 
 class MultiDeviceSyncPage extends StatefulWidget {
   const MultiDeviceSyncPage({super.key});
@@ -16,15 +17,18 @@ class _MultiDeviceSyncPageState extends State<MultiDeviceSyncPage> {
       password = TextEditingController(),
       domain = TextEditingController();
   String provider = 'webdav';
+  String _knownPassword = '';
   bool enabled = false, implicit = false, saving = false, loggingIn = false;
   @override
   void initState() {
     super.initState();
+    service.addListener(_serviceChanged);
     final c = service.config;
     provider = c['provider'] ?? 'webdav';
     endpoint.text = c['endpoint'] ?? '';
     username.text = c['username'] ?? '';
     password.text = c['password'] ?? '';
+    _knownPassword = password.text;
     domain.text = c['domain'] ?? '';
     enabled = service.enabled;
     implicit = c['implicit'] == 'true';
@@ -32,11 +36,22 @@ class _MultiDeviceSyncPageState extends State<MultiDeviceSyncPage> {
 
   @override
   void dispose() {
+    service.removeListener(_serviceChanged);
     endpoint.dispose();
     username.dispose();
     password.dispose();
     domain.dispose();
     super.dispose();
+  }
+
+  void _serviceChanged() {
+    if (!mounted) return;
+    final latest = service.configFor(provider)['password'];
+    if (latest != null) {
+      if (password.text == _knownPassword) password.text = latest;
+      _knownPassword = latest;
+    }
+    setState(() {});
   }
 
   void notice(String message) {
@@ -75,12 +90,39 @@ class _MultiDeviceSyncPageState extends State<MultiDeviceSyncPage> {
       ).invokeMethod<String>('login', {'provider': provider});
       if (token != null && token.isNotEmpty) {
         password.text = token;
-        notice('已取得登录授权，请保存设置');
+        _knownPassword = token;
+        await service.rememberProvider(form());
+        notice('授权已保存在本机，可以验证持续同步或保存启用');
       }
     } catch (_) {
       notice('授权尚未完成，可以重新登录或手动导入令牌');
     } finally {
       if (mounted) setState(() => loggingIn = false);
+    }
+  }
+
+  Map<String, String> form() => {
+    'provider': provider,
+    'endpoint': endpoint.text.trim(),
+    'username': username.text.trim(),
+    'password': password.text,
+    'domain': domain.text.trim(),
+    'implicit': implicit.toString(),
+    'enabled': enabled.toString(),
+  };
+  Future<void> validate() async {
+    try {
+      await service.validateProvider(form());
+      notice('持续同步验证通过，阅读记录未改动');
+    } catch (error) {
+      notice(error is SyncFailure ? error.message : '验证未完成，请查看状态后重试');
+    } finally {
+      if (mounted) {
+        final saved = service.configFor(provider);
+        password.text = saved['password'] ?? password.text;
+        _knownPassword = password.text;
+        setState(() {});
+      }
     }
   }
 
@@ -92,6 +134,7 @@ class _MultiDeviceSyncPageState extends State<MultiDeviceSyncPage> {
   }) => Padding(
     padding: const EdgeInsets.only(bottom: 16),
     child: TextField(
+      enabled: !saving && !loggingIn && !service.validating,
       controller: controller,
       obscureText: secret,
       autocorrect: false,
@@ -144,18 +187,22 @@ class _MultiDeviceSyncPageState extends State<MultiDeviceSyncPage> {
                     ),
                   ),
               ],
-              onChanged: saving
+              onChanged: saving || loggingIn || service.validating
                   ? null
                   : (value) {
                       if (value == null) return;
                       setState(() {
                         provider = value;
-                        endpoint.clear();
-                        username.clear();
-                        password.clear();
-                        domain.clear();
-                        enabled = false;
-                        implicit = false;
+                        final saved = service.configFor(value);
+                        endpoint.text = saved['endpoint'] ?? '';
+                        username.text = saved['username'] ?? '';
+                        password.text = saved['password'] ?? '';
+                        _knownPassword = password.text;
+                        domain.text = saved['domain'] ?? '';
+                        enabled =
+                            service.config['provider'] == value &&
+                            service.enabled;
+                        implicit = saved['implicit'] == 'true';
                       });
                     },
             ),
@@ -189,11 +236,13 @@ class _MultiDeviceSyncPageState extends State<MultiDeviceSyncPage> {
               ),
               if (!cloud) field(username, '账号'),
               if (provider == 'smb') field(domain, '域（可留空）'),
-              if (Platform.isAndroid && {'ali', 'onedrive'}.contains(provider))
+              if (Platform.isAndroid && cloud)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 16),
                   child: OutlinedButton.icon(
-                    onPressed: loggingIn ? null : login,
+                    onPressed: loggingIn || saving || service.validating
+                        ? null
+                        : login,
                     icon: const Icon(Icons.login),
                     label: Text(loggingIn ? '正在授权…' : '登录 ${selected.title}'),
                   ),
@@ -209,6 +258,34 @@ class _MultiDeviceSyncPageState extends State<MultiDeviceSyncPage> {
                     : '密码',
                 secret: true,
               ),
+              if (cloud)
+                AnimatedBuilder(
+                  animation: service,
+                  builder: (context, _) => Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      OutlinedButton.icon(
+                        onPressed: service.validating || loggingIn
+                            ? null
+                            : validate,
+                        icon: const Icon(Icons.fact_check_outlined),
+                        label: Text(service.validating ? '正在验证…' : '验证登录与持续同步'),
+                      ),
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 8),
+                        child: Text(
+                          '只在 fqappx-validation-v3 专用目录写入验证记录，检查反复覆盖、删除合并及断写恢复；不修改本机书架。',
+                        ),
+                      ),
+                      if (service.validationFor(provider) case final report?)
+                        Text(
+                          report['passed'] == true
+                              ? '本机验证已通过'
+                              : '上次验证未完成：${report['error'] ?? ''}',
+                        ),
+                    ],
+                  ),
+                ),
               if (provider == 'ftps')
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
@@ -226,7 +303,9 @@ class _MultiDeviceSyncPageState extends State<MultiDeviceSyncPage> {
               ),
               const SizedBox(height: 12),
               FilledButton(
-                onPressed: saving ? null : save,
+                onPressed: saving || loggingIn || service.validating
+                    ? null
+                    : save,
                 child: Text(saving ? '保存中…' : '保存设置'),
               ),
             ],
