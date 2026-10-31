@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../widgets/remote_navigation.dart';
 
 import '../services/chapter_cache_store.dart' show formatCacheBytes;
 import '../services/drama_download_store.dart';
@@ -105,10 +106,7 @@ class _CachedDramasPageState extends State<CachedDramasPage> {
   }
 
   Future<void> _clearAll() async {
-    if (!await _confirm(
-      '清空全部离线缓存',
-      '所有已下载的剧集会从设备删除，联网后可重新缓存。',
-    )) {
+    if (!await _confirm('清空全部离线缓存', '所有已下载的剧集会从设备删除，联网后可重新缓存。')) {
       return;
     }
     for (final summary in _dramas) {
@@ -146,22 +144,19 @@ class _CachedDramasPageState extends State<CachedDramasPage> {
     return Scaffold(
       key: const ValueKey('dramas-page'),
       appBar: AppBar(
+        leading: remotePageBackButton(context),
         title: const Text('离线缓存'),
         actions: [
           IconButton(
             key: const ValueKey('dramas-pause-all'),
             tooltip: '暂停全部下载',
-            onPressed: !hasActiveTasks
-                ? null
-                : () => _downloader.pauseAll(),
+            onPressed: !hasActiveTasks ? null : () => _downloader.pauseAll(),
             icon: const Icon(Icons.pause_circle_outline),
           ),
           IconButton(
             key: const ValueKey('dramas-resume-all'),
             tooltip: '继续全部下载',
-            onPressed: !hasPausedTasks
-                ? null
-                : () => _downloader.resumeAll(),
+            onPressed: !hasPausedTasks ? null : () => _downloader.resumeAll(),
             icon: const Icon(Icons.play_circle_outline),
           ),
           IconButton(
@@ -249,10 +244,9 @@ class _CachedDramasPageState extends State<CachedDramasPage> {
                         width: 44,
                         height: 44,
                         decoration: BoxDecoration(
-                          color: Theme.of(context)
-                              .colorScheme
-                              .primary
-                              .withValues(alpha: 0.12),
+                          color: Theme.of(
+                            context,
+                          ).colorScheme.primary.withValues(alpha: 0.12),
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: Icon(
@@ -278,9 +272,9 @@ class _CachedDramasPageState extends State<CachedDramasPage> {
                               '占用空间：${formatCacheBytes(bytes)} · 加密离线播放',
                               style: TextStyle(
                                 fontSize: 12,
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onSurfaceVariant,
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.onSurfaceVariant,
                               ),
                             ),
                           ],
@@ -329,9 +323,7 @@ class _CachedDramasPageState extends State<CachedDramasPage> {
                       children: [
                         for (final episode in item.episodes)
                           ListTile(
-                            key: ValueKey(
-                              'drama-episode-${episode.itemId}',
-                            ),
+                            key: ValueKey('drama-episode-${episode.itemId}'),
                             dense: true,
                             title: Text(
                               // 集序以目录顺序为准：老记录里的 index 是
@@ -350,10 +342,7 @@ class _CachedDramasPageState extends State<CachedDramasPage> {
                               ),
                               tooltip: '删除该集',
                               onPressed: () => _deleteEpisode(episode),
-                              icon: const Icon(
-                                Icons.delete_outline,
-                                size: 20,
-                              ),
+                              icon: const Icon(Icons.delete_outline, size: 20),
                             ),
                           ),
                         for (final task in _downloader.tasksFor(item.drama.id))
@@ -361,9 +350,7 @@ class _CachedDramasPageState extends State<CachedDramasPage> {
                             (episode) => episode.itemId == task.itemId,
                           ))
                             ListTile(
-                              key: ValueKey(
-                                'drama-task-${task.itemId}',
-                              ),
+                              key: ValueKey('drama-task-${task.itemId}'),
                               dense: true,
                               title: Text(task.title),
                               subtitle: task.progress != null

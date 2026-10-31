@@ -65,7 +65,7 @@ class _SeriesDetailIntroSectionState extends State<SeriesDetailIntroSection> {
     );
   }
 
-  Widget _intro(HomePalette palette) => GestureDetector(
+  Widget _intro(HomePalette palette) => RemoteGestureDetector(
     behavior: HitTestBehavior.opaque,
     onTap: () => setState(() => _expanded = !_expanded),
     child: Text(

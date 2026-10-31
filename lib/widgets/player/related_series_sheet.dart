@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
+import '../remote_focus.dart';
+
 import '../../models/related_series.dart';
 import '../../services/api_client.dart';
 import '../../services/backend_transport.dart';
@@ -189,7 +191,7 @@ class _RelatedSeriesBlockState extends State<RelatedSeriesBlock> {
       // 区块可能挂在非 Material 宿主上（测试的 MaterialApp.home），
       // InkWell 必须有自己的 Material 祖先。
       type: MaterialType.transparency,
-      child: InkWell(
+      child: RemoteInkWell(
         key: ValueKey('related-series-${item.id}'),
         borderRadius: BorderRadius.circular(8),
         onTap: item.unavailable

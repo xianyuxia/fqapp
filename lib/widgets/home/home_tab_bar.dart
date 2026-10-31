@@ -199,8 +199,9 @@ class HomeTabBarDelegate extends SliverPersistentHeaderDelegate {
       label: category.label,
       excludeSemantics: true,
       onTap: () => onSelect(index),
-      child: GestureDetector(
+      child: RemoteGestureDetector(
         key: ValueKey('home_category_$index'),
+        framePadding: const EdgeInsets.symmetric(horizontal: 10),
         behavior: HitTestBehavior.opaque,
         onTap: () => onSelect(index),
         // 官方书城顶栏不画指示器：`alx.xml` 把 `aup`(指示器高度) 设成 0，

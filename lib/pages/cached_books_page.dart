@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../widgets/remote_navigation.dart';
 
 import '../models/media_item.dart';
 import '../services/api_client.dart';
@@ -267,6 +268,7 @@ class _CachedBooksPageState extends State<CachedBooksPage> {
     final bytes = _books.fold(0, (sum, item) => sum + item.stats.byteCount);
     return Scaffold(
       appBar: AppBar(
+        leading: remotePageBackButton(context),
         title: const Text('离线缓存'),
         actions: [
           IconButton(
@@ -352,10 +354,9 @@ class _CachedBooksPageState extends State<CachedBooksPage> {
                         width: 44,
                         height: 44,
                         decoration: BoxDecoration(
-                          color: Theme.of(context)
-                              .colorScheme
-                              .primary
-                              .withValues(alpha: 0.12),
+                          color: Theme.of(
+                            context,
+                          ).colorScheme.primary.withValues(alpha: 0.12),
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: Icon(
@@ -381,9 +382,9 @@ class _CachedBooksPageState extends State<CachedBooksPage> {
                               '占用空间：${formatCacheBytes(bytes)} · 点击可离线续读',
                               style: TextStyle(
                                 fontSize: 12,
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onSurfaceVariant,
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.onSurfaceVariant,
                               ),
                             ),
                           ],

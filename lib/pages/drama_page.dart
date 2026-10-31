@@ -55,6 +55,8 @@ import 'search_page.dart';
 import 'series_detail_page.dart';
 import 'series_pager_physics.dart';
 
+part 'drama_page_remote.dart';
+
 /// One entry of the 短剧 tab's channel strip.
 ///
 /// The official strip is server-driven (`BookstoreTabData.tabItem[]`, rendered
@@ -1375,7 +1377,7 @@ class _DramaPageState extends ConsumerState<DramaPage>
     // 只有推荐(16)等视频流频道是黑底竖滑播放。状态栏图标亮度跟着页面走。
     final isVideoFlow = channel.playsInline;
     final lightPage = !isVideoFlow;
-    return AnnotatedRegion<SystemUiOverlayStyle>(
+    return _remoteFeedMenu(items, AnnotatedRegion<SystemUiOverlayStyle>(
       // 深色外观下浅色页也是深色画布，状态栏图标要跟着换成浅色。
       value:
           (lightPage && !palette.dark
@@ -1537,7 +1539,7 @@ class _DramaPageState extends ConsumerState<DramaPage>
           ],
         ),
       ),
-    );
+    ));
   }
 
   /// 官方瀑布格频道（StaggeredFeedTab）：漫剧 = `client_template` 13
@@ -1661,6 +1663,7 @@ class _DramaPageState extends ConsumerState<DramaPage>
     return NotificationListener<ScrollNotification>(
       onNotification: _onFeedScroll,
       child: PageView.builder(
+        allowImplicitScrolling: true,
         key: const Key('drama_feed'),
         controller: _pages,
         scrollDirection: Axis.vertical,
@@ -2280,7 +2283,7 @@ class _TopBarState extends State<_TopBar> {
     return Semantics(
       button: true,
       label: '搜索短剧',
-      child: GestureDetector(
+      child: RemoteGestureDetector(
         key: const Key('drama_search_button'),
         onTap: widget.onSearch,
         behavior: HitTestBehavior.opaque,
@@ -2375,7 +2378,7 @@ class _ChannelTab extends StatelessWidget {
       excludeSemantics: true,
       child: Material(
         color: Colors.transparent,
-        child: InkWell(
+        child: RemoteInkWell(
           onTap: onTap,
           // 点击水波也走圆角：方角高亮压在浅色页上像一块硬阴影。
           borderRadius: BorderRadius.circular(12),
@@ -2490,6 +2493,16 @@ class _DramaFeedCard extends StatelessWidget {
   /// player, so only it shows a seek bar (and only it reacts to gestures).
   bool get _interactive => playback != null;
 
+  Widget _remoteGestures() => _CardGestures(
+            key: ValueKey('drama_card_${item.kind}_${item.id}'),
+            enabled: _interactive,
+            onTap: onTogglePlay,
+            onMenu: onQuickCatalog,
+            onPanelLongPress: onOpenMorePanel,
+            onBoostLongPressStart: () => unawaited(playback?.startBoost()),
+            onBoostLongPressEnd: () => unawaited(playback?.endBoost()),
+          );
+
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.sizeOf(context);
@@ -2553,14 +2566,7 @@ class _DramaFeedCard extends StatelessWidget {
           left: 0,
           right: 0,
           bottom: bottomInset + 160,
-          child: _CardGestures(
-            key: ValueKey('drama_card_${item.kind}_${item.id}'),
-            enabled: _interactive,
-            onTap: onTogglePlay,
-            onPanelLongPress: onOpenMorePanel,
-            onBoostLongPressStart: () => unawaited(playback?.startBoost()),
-            onBoostLongPressEnd: () => unawaited(playback?.endBoost()),
-          ),
+          child: _remoteGestures(),
         ),
         // Above the card's tap target, so the retry button wins its own taps.
         ?errorOverlay,
@@ -2766,78 +2772,6 @@ class _PlayPauseFeedback extends StatelessWidget {
 /// 而真正处理双击点赞的是另一条链路（`o.z7` → `lh3.a.onDoubleTap`），本仓库
 /// 不实现点赞，所以这里也不注册双击。
 ///
-/// Long-press is the official two-branch gesture (`jq3/x$q.onLongPress`
-/// `:2228-2262`）：命中横向中带（`K6()` `:2690-2711`，竖屏 50% / 横屏 33% 宽、
-/// 居中、Y 不限）且 `y7()` 处理成功 → 打开更多面板；带外才是速度层的 2×
-/// 快进，按住期间生效（`@string/ec6`=「2倍速快进中」，`cjx.xml`）。
-///
-/// **这里不再挂横向拖动。** 官方那张卡上左右滑是整屏调进度（`o.java:K6`，
-/// `bottomMargin=138dp`），但这条手势和「横滑切频道」是同一个操作的两套语义，
-/// 落在不同区域会互相打架。调进度收窄到底部进度条（`_SeekTrack` 自己带
-/// 横向拖动）：卡片其余区域一律归外层 [TabSwipeArea] 切频道，左边滑是
-/// 上一个频道、右边滑是下一个，不再随按下点在「调进度 / 切频道」之间跳。
-class _CardGestures extends StatelessWidget {
-  final bool enabled;
-  final VoidCallback onTap;
-  final VoidCallback onPanelLongPress;
-  final VoidCallback onBoostLongPressStart;
-  final VoidCallback onBoostLongPressEnd;
-
-  const _CardGestures({
-    super.key,
-    required this.enabled,
-    required this.onTap,
-    required this.onPanelLongPress,
-    required this.onBoostLongPressStart,
-    required this.onBoostLongPressEnd,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    if (!enabled) return const SizedBox.expand();
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        // 官方 `jq3/x.K6()`：中带宽 = 视图宽 ×（竖屏 0.5 / 横屏 0.33），
-        // 居中放置，Y 不限。横竖屏分档来自官方 `J6()`。
-        final bandFraction =
-            MediaQuery.orientationOf(context) == Orientation.landscape
-            ? 0.33
-            : 0.5;
-        bool inBand(double dx) {
-          final width = constraints.maxWidth;
-          if (width <= 0) return false;
-          final half = width * bandFraction / 2;
-          final center = width / 2;
-          return dx >= center - half && dx <= center + half;
-        }
-
-        return GestureDetector(
-          key: const Key('drama_card_gestures'),
-          // opaque：整块手势区自己吃指针，上滑翻页仍归外层 PageView 的竖直
-          // 拖动；横向则留给更外层的 TabSwipeArea（这里没有横向识别器，
-          // 竞技场里只剩它一个）。
-          behavior: HitTestBehavior.opaque,
-          // 没有双击手势了，单击立即派发（不再等双击窗口）。
-          onTap: onTap,
-          onLongPressStart: (details) {
-            if (inBand(details.localPosition.dx)) {
-              onPanelLongPress();
-            } else {
-              HapticFeedback.lightImpact();
-              onBoostLongPressStart();
-            }
-          },
-          // 带外快进的收尾由 endBoost 的 _boosting 门挡住：中带开面板的
-          // 那支从未 startBoost，松手不能动速率。
-          onLongPressEnd: (_) => onBoostLongPressEnd(),
-          onLongPressCancel: onBoostLongPressEnd,
-          child: const SizedBox.expand(),
-        );
-      },
-    );
-  }
-}
-
 /// Official mute pill (`mq3.c` + `bvf.xml`).
 ///
 /// 108×36dp 展开态（20dp 静音图标距左 16、「取消静音」14sp 白字距右 12，
@@ -2896,7 +2830,7 @@ class _MuteHintState extends State<_MuteHint> {
         return Semantics(
           button: true,
           label: '取消静音',
-          child: GestureDetector(
+          child: RemoteGestureDetector(
             key: const Key('drama_mute_hint'),
             onTap: () {
               unawaited(widget.playback.toggleMute());
@@ -3093,7 +3027,7 @@ class _SeekTrackState extends State<_SeekTrack> {
           (widget.totalDuration.inMilliseconds * effectiveProgress).round();
       final previewDuration = Duration(milliseconds: previewMillis);
 
-      return GestureDetector(
+      return RemoteGestureDetector(
         key: const Key('drama_seek_bar'),
         behavior: HitTestBehavior.opaque,
         onHorizontalDragStart: (details) => seekTo(details.localPosition.dx),
@@ -3307,7 +3241,7 @@ class _InfoPanelState extends State<_InfoPanel> {
         ],
         // 标题行：官方 `d6g.xml`。点击进剧集详情页（ql3/v0 `a1()` 默认分支），
         // 与播放页标题行同一路跳转；播放/暂停由卡片手势层承担。
-        GestureDetector(
+        RemoteGestureDetector(
           key: const Key('drama-series-title'),
           onTap: widget.onOpenSeriesDetail,
           behavior: HitTestBehavior.opaque,
@@ -3377,7 +3311,7 @@ class _InfoPanelState extends State<_InfoPanel> {
             active: widget.hotCommentActive,
           )
         else if (item.intro.isNotEmpty)
-          GestureDetector(
+          RemoteGestureDetector(
             onTap: () => setState(() => _expanded = !_expanded),
             behavior: HitTestBehavior.opaque,
             child: Row(
@@ -3446,7 +3380,7 @@ class _EpisodePill extends StatelessWidget {
     // `nk3.c.d()`：episodeCnt > 1 → `@string/e7v`=「观看全集·%s集」，
     // 否则 `@string/e7w`=「观看全片」。
     final label = count > 1 ? '观看全集·$count集' : '观看全片';
-    return GestureDetector(
+    return RemoteGestureDetector(
       key: const Key('drama_episode_pill'),
       onTap: onTap,
       behavior: HitTestBehavior.opaque,
@@ -3495,7 +3429,7 @@ class _QuickCatalogButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
+    return RemoteGestureDetector(
       onTap: onTap,
       behavior: HitTestBehavior.opaque,
       child: Container(
@@ -3553,7 +3487,7 @@ class _FullscreenRoundButton extends StatelessWidget {
     builder: (context, landscape, _) {
       // `null`（还没解出尺寸）与竖版同样不渲染，避免闪出又消失。
       if (landscape != true) return const SizedBox.shrink();
-      return GestureDetector(
+      return RemoteGestureDetector(
         key: const Key('drama_fullscreen_button'),
         onTap: onTap,
         behavior: HitTestBehavior.opaque,
@@ -3630,7 +3564,7 @@ class _FeedMessage extends StatelessWidget {
               ),
               if (actionLabel != null && onAction != null) ...[
                 const SizedBox(height: 16),
-                GestureDetector(
+                RemoteGestureDetector(
                   onTap: onAction,
                   behavior: HitTestBehavior.opaque,
                   child: Container(
@@ -3861,7 +3795,7 @@ class _InlineVideoError extends StatelessWidget {
                     style: const TextStyle(fontSize: 14, color: Colors.white),
                   ),
                   const SizedBox(height: 16),
-                  GestureDetector(
+                  RemoteGestureDetector(
                     key: ValueKey('drama_inline_retry_${item.kind}_${item.id}'),
                     onTap: onRetry,
                     behavior: HitTestBehavior.opaque,
@@ -3989,7 +3923,7 @@ class _HistoryCard extends StatelessWidget {
     final cardColor = palette.dark
         ? (editing ? palette.soft : palette.surface)
         : (editing ? const Color(0xFFFAFAFA) : Colors.white);
-    return GestureDetector(
+    return RemoteGestureDetector(
       onTap: onTap,
       onLongPress: onLongPress,
       behavior: HitTestBehavior.opaque,
@@ -4174,7 +4108,7 @@ class _BrowseCard extends StatelessWidget {
     final subtitle = _subtitle;
     final pixelRatio = MediaQuery.devicePixelRatioOf(context);
     final palette = HomePalette.of(context);
-    return GestureDetector(
+    return RemoteGestureDetector(
       onTap: onTap,
       behavior: HitTestBehavior.opaque,
       child: Column(
@@ -4292,7 +4226,7 @@ class _HistoryEmpty extends StatelessWidget {
           Text(message, style: TextStyle(fontSize: 14, color: palette.muted)),
           if (onFind != null) ...[
             const SizedBox(height: 20),
-            GestureDetector(
+            RemoteGestureDetector(
               key: const Key('drama_history_find'),
               onTap: onFind,
               behavior: HitTestBehavior.opaque,
@@ -4588,7 +4522,7 @@ class _LocalListState extends State<_LocalList> {
           ),
           const SizedBox(width: 8),
           if (filtered.isNotEmpty)
-            GestureDetector(
+            RemoteGestureDetector(
               key: const Key('drama_recent_edit'),
               behavior: HitTestBehavior.opaque,
               onTap: () => _setEditing(true),
@@ -4624,7 +4558,7 @@ class _LocalListState extends State<_LocalList> {
           children: [
             Row(
               children: [
-                GestureDetector(
+                RemoteGestureDetector(
                   key: const Key('drama_recent_select_all'),
                   behavior: HitTestBehavior.opaque,
                   onTap: () => setState(() {
@@ -4642,7 +4576,7 @@ class _LocalListState extends State<_LocalList> {
                   ),
                 ),
                 const Spacer(),
-                GestureDetector(
+                RemoteGestureDetector(
                   behavior: HitTestBehavior.opaque,
                   onTap: () => _setEditing(false),
                   child: Text(
@@ -4749,7 +4683,7 @@ class _LocalListState extends State<_LocalList> {
   }) {
     return Opacity(
       opacity: enabled ? 1 : 0.3,
-      child: GestureDetector(
+      child: RemoteGestureDetector(
         key: key,
         behavior: HitTestBehavior.opaque,
         onTap: onTap,
@@ -4855,7 +4789,7 @@ class _LocalListState extends State<_LocalList> {
   Widget _filterChip(String? kind, String label) {
     final selected = _filter == kind;
     final palette = HomePalette.of(context);
-    return GestureDetector(
+    return RemoteGestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: () => setState(() => _filter = kind),
       child: DecoratedBox(

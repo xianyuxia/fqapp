@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+
+import '../remote_focus.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
 
 import '../../models/media_item.dart';
@@ -265,7 +267,7 @@ class _PlayletQuickCatalogSheetState extends State<PlayletQuickCatalogSheet> {
                   ),
 
                   // Fullscreen button
-                  GestureDetector(
+                  RemoteGestureDetector(
                     onTap: () {
                       Navigator.of(context).pop();
                       widget.onFullscreen();
@@ -308,7 +310,7 @@ class _PlayletQuickCatalogSheetState extends State<PlayletQuickCatalogSheet> {
                   const SizedBox(width: 8),
 
                   // Close button
-                  GestureDetector(
+                  RemoteGestureDetector(
                     onTap: () => Navigator.of(context).pop(),
                     behavior: HitTestBehavior.opaque,
                     child: Container(
@@ -400,7 +402,7 @@ class _PlayletQuickCatalogSheetState extends State<PlayletQuickCatalogSheet> {
                 style: const TextStyle(fontSize: 13, color: Colors.white70),
               ),
               const SizedBox(height: 14),
-              GestureDetector(
+              RemoteGestureDetector(
                 onTap: _loadDirectory,
                 child: Container(
                   padding: const EdgeInsets.symmetric(
@@ -448,7 +450,7 @@ class _PlayletQuickCatalogSheetState extends State<PlayletQuickCatalogSheet> {
         final isCurrent = index == _currentIndex;
         final episodeNum = index + 1;
 
-        return GestureDetector(
+        return RemoteGestureDetector(
           onTap: () {
             Navigator.of(context).pop();
             widget.onEpisodeSelected(index, _episodes);

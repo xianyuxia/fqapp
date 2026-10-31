@@ -24,7 +24,7 @@ class HomeBlockMore extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final palette = HomePalette.of(context);
-    return GestureDetector(
+    return RemoteGestureDetector(
       onTap: onTap,
       behavior: HitTestBehavior.opaque,
       child: Row(
@@ -264,7 +264,7 @@ class _BoardNames extends StatelessWidget {
           for (var index = 0; index < names.length; index++)
             Padding(
               padding: EdgeInsets.only(left: index == 0 ? 0 : 20),
-              child: GestureDetector(
+              child: RemoteGestureDetector(
                 onTap: () => onSelect(index),
                 behavior: HitTestBehavior.opaque,
                 child: Column(
@@ -471,7 +471,7 @@ class HomeStreamFooter extends StatelessWidget {
       case _StreamFooterState.retry:
         return Padding(
           padding: const EdgeInsets.only(top: 16, bottom: 24),
-          child: GestureDetector(
+          child: RemoteGestureDetector(
             onTap: onRetry,
             behavior: HitTestBehavior.opaque,
             child: Center(

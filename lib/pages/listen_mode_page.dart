@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import '../widgets/remote_navigation.dart';
 
 import '../models/media_item.dart';
 import '../services/api_client.dart';
@@ -302,7 +303,7 @@ class _ListenModePageState extends State<ListenModePage>
           backgroundColor: Colors.transparent,
           foregroundColor: Colors.white,
           elevation: 0,
-          leading: IconButton(
+          leading: RemoteBackButton(
             key: const ValueKey('listen-page-back'),
             onPressed: _exitWithResult,
             icon: const Icon(Icons.arrow_back),

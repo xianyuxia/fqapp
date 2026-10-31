@@ -38,7 +38,11 @@ class AboutPage extends StatelessWidget {
 
     return Scaffold(
       backgroundColor: palette.canvas,
-      appBar: AppBar(title: const Text('关于'), centerTitle: true),
+      appBar: AppBar(
+        leading: remotePageBackButton(context),
+        title: const Text('关于'),
+        centerTitle: true,
+      ),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
         children: [
@@ -86,9 +90,7 @@ class AboutPage extends StatelessWidget {
     return showDialog<void>(
       context: context,
       builder: (context) => Dialog(
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
           child: Column(
@@ -225,8 +227,7 @@ class _AboutInfoCard extends StatelessWidget {
             context: context,
             applicationName: '什锦铺',
             applicationVersion: AboutPage.versionText,
-            applicationLegalese:
-                '什锦铺基于 GPL-3.0 协议开源，第三方组件遵循其各自的许可协议。',
+            applicationLegalese: '什锦铺基于 GPL-3.0 协议开源，第三方组件遵循其各自的许可协议。',
           ),
         ),
         const Divider(height: 1, indent: 68),
@@ -297,7 +298,9 @@ class _AboutRow extends StatelessWidget {
     final tappable = onTap != null || url != null;
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      onTap: onTap ?? (url == null ? null : () => _launchExternalUrl(context, url!)),
+      onTap:
+          onTap ??
+          (url == null ? null : () => _launchExternalUrl(context, url!)),
       leading: Container(
         width: 38,
         height: 38,

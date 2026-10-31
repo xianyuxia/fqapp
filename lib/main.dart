@@ -274,7 +274,7 @@ class _FqAppState extends State<FqApp> {
                       routes: _audioRoutes,
                       child: isWindowsDesktop
                           ? DesktopAppFrame(child: playback)
-                          : playback,
+                          : RemoteFocusOverlay(child: playback),
                     );
                   },
                   title: '什锦铺',
@@ -422,6 +422,7 @@ class RootShell extends StatefulWidget {
 
 class _RootShellState extends State<RootShell> {
   int _index = 0;
+  final _remoteDock = RemoteDockFocus();
   bool _backendReady = false;
 
   /// 首页 feed 的滚动控制器，由壳层持有以便底部栏触发回顶部。
@@ -441,6 +442,7 @@ class _RootShellState extends State<RootShell> {
   /// 分类栏会自己重新吸住。
   void _selectTab(int index) {
     if (index != _index) {
+      _remoteDock.preserveOnSwitch(index);
       setState(() => _index = index);
       return;
     }
@@ -491,6 +493,7 @@ class _RootShellState extends State<RootShell> {
   void dispose() {
     dramaLightPageNotifier.removeListener(_onDramaChromeChanged);
     _homeScroll.dispose();
+    _remoteDock.dispose();
     super.dispose();
   }
 
@@ -623,33 +626,14 @@ class _RootShellState extends State<RootShell> {
           ),
         ),
       ),
-      child: NavigationBar(
-        selectedIndex: _index,
-        onDestinationSelected: _selectTab,
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(LucideIcons.house),
-            selectedIcon: Icon(LucideIcons.house),
-            label: '首页',
-          ),
-          NavigationDestination(
-            icon: Icon(LucideIcons.clapperboard),
-            selectedIcon: Icon(LucideIcons.clapperboard),
-            label: '短剧',
-          ),
-          NavigationDestination(
-            icon: Icon(LucideIcons.library_big),
-            selectedIcon: Icon(LucideIcons.library_big),
-            label: '书架',
-          ),
-          NavigationDestination(
-            icon: Icon(LucideIcons.circle_user_round),
-            selectedIcon: Icon(LucideIcons.circle_user_round),
-            label: '我的',
-          ),
-        ],
+      child: _remoteDock.wrap(
+        NavigationBar(
+          selectedIndex: _index,
+          onDestinationSelected: _selectTab,
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          destinations: remoteRootDestinations,
+        ),
       ),
     );
 
@@ -679,98 +663,103 @@ class _RootShellState extends State<RootShell> {
     // light / dark 两套预设都把它写成纯黑底 + 白图标，浅色页面下会在最底部
     // 留一条突兀的黑带；短剧只有视频流（推荐）背后是视频，仍用黑。
     final lightSystemIcons = dramaOnVideo || isDark;
-    return Scaffold(
-      extendBody: true,
-      // 状态栏图标亮度挂在壳层、按选中 tab 切换：短剧页是黑底视频流（官方
-      // SeriesMallFragment 的透明顶栏直接压在 feed 上），深色图标在黑底上
-      // 整条状态栏都看不见，必须浅色；其余三页浅色底用深色。样式放壳层而不是
-      // 各页内部，是因为 IndexedStack 里未选中的页不参与绘制，页内
-      // AnnotatedRegion 切走后会残留上一个页的样式。
-      body: AnnotatedRegion<SystemUiOverlayStyle>(
-        value:
-            (lightSystemIcons
-                    ? SystemUiOverlayStyle.light
-                    : SystemUiOverlayStyle.dark)
-                .copyWith(
-                  systemNavigationBarColor: dramaOnVideo
-                      ? Colors.black
-                      : palette.canvas,
-                  systemNavigationBarDividerColor: dramaOnVideo
-                      ? Colors.black
-                      : palette.canvas,
-                  systemNavigationBarIconBrightness: lightSystemIcons
-                      ? Brightness.light
-                      : Brightness.dark,
-                ),
-        child: LazyIndexedStack(
-          index: _index,
-          children: [
-            HomePage(
-              scrollController: _homeScroll,
-              cueLoader: () => ApiClient.instance.searchCue(),
-            ),
-            const DramaPage(),
-            // 空书架上的「去书城找书」切回首页 tab；收藏空态的「找短剧」
-            // 切到短剧 tab。
-            LibraryPage(
-              onBrowse: () => setState(() => _index = 0),
-              onFindDrama: () => setState(() => _index = 1),
-            ),
-            const MinePage(),
-          ],
-        ),
-      ),
-      bottomNavigationBar: SafeArea(
-        top: false,
-        left: false,
-        right: false,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-          child: RepaintBoundary(
-            child: Container(
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(28),
-                // 墨水屏：阴影是灰阶 + 刷新残影来源，直接去掉，改用实线边框。
-                boxShadow: eink
-                    ? null
-                    : [
-                        BoxShadow(
-                          color: Colors.black.withValues(
-                            alpha: glassDark ? 0.38 : 0.08,
-                          ),
-                          blurRadius: 22,
-                          offset: const Offset(0, 8),
-                        ),
-                        BoxShadow(
-                          color: HomePalette.accent.withValues(
-                            alpha: glassDark ? 0.06 : 0.03,
-                          ),
-                          blurRadius: 14,
-                          offset: const Offset(0, 2),
-                        ),
-                      ],
+    return RemoteDockMenu(
+      dock: _remoteDock,
+      index: _index,
+      enabled: _index == 0,
+      child: Scaffold(
+        extendBody: true,
+        // 状态栏图标亮度挂在壳层、按选中 tab 切换：短剧页是黑底视频流（官方
+        // SeriesMallFragment 的透明顶栏直接压在 feed 上），深色图标在黑底上
+        // 整条状态栏都看不见，必须浅色；其余三页浅色底用深色。样式放壳层而不是
+        // 各页内部，是因为 IndexedStack 里未选中的页不参与绘制，页内
+        // AnnotatedRegion 切走后会残留上一个页的样式。
+        body: AnnotatedRegion<SystemUiOverlayStyle>(
+          value:
+              (lightSystemIcons
+                      ? SystemUiOverlayStyle.light
+                      : SystemUiOverlayStyle.dark)
+                  .copyWith(
+                    systemNavigationBarColor: dramaOnVideo
+                        ? Colors.black
+                        : palette.canvas,
+                    systemNavigationBarDividerColor: dramaOnVideo
+                        ? Colors.black
+                        : palette.canvas,
+                    systemNavigationBarIconBrightness: lightSystemIcons
+                        ? Brightness.light
+                        : Brightness.dark,
+                  ),
+          child: LazyIndexedStack(
+            index: _index,
+            children: [
+              HomePage(
+                scrollController: _homeScroll,
+                cueLoader: () => ApiClient.instance.searchCue(),
               ),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(28),
-                // 墨水屏：BackdropFilter 毛玻璃会把底部栏变成一团灰，改实色。
-                // 短剧 tab：背后是每帧变化的视频流，BackdropFilter 每帧都要
-                // 重算模糊，GPU 一直满负荷；该 tab 下改用同色静态半透明底，
-                // 外观几乎不变，省掉每帧重栅格化。切出短剧 tab 后恢复毛玻璃。
-                child: eink
-                    ? Container(
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(28),
-                          border: Border.all(color: Colors.black, width: 0.8),
+              const DramaPage(),
+              // 空书架上的「去书城找书」切回首页 tab；收藏空态的「找短剧」
+              // 切到短剧 tab。
+              LibraryPage(
+                onBrowse: () => setState(() => _index = 0),
+                onFindDrama: () => setState(() => _index = 1),
+              ),
+              const MinePage(),
+            ],
+          ),
+        ),
+        bottomNavigationBar: SafeArea(
+          top: false,
+          left: false,
+          right: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: RepaintBoundary(
+              child: Container(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(28),
+                  // 墨水屏：阴影是灰阶 + 刷新残影来源，直接去掉，改用实线边框。
+                  boxShadow: eink
+                      ? null
+                      : [
+                          BoxShadow(
+                            color: Colors.black.withValues(
+                              alpha: glassDark ? 0.38 : 0.08,
+                            ),
+                            blurRadius: 22,
+                            offset: const Offset(0, 8),
+                          ),
+                          BoxShadow(
+                            color: HomePalette.accent.withValues(
+                              alpha: glassDark ? 0.06 : 0.03,
+                            ),
+                            blurRadius: 14,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(28),
+                  // 墨水屏：BackdropFilter 毛玻璃会把底部栏变成一团灰，改实色。
+                  // 短剧 tab：背后是每帧变化的视频流，BackdropFilter 每帧都要
+                  // 重算模糊，GPU 一直满负荷；该 tab 下改用同色静态半透明底，
+                  // 外观几乎不变，省掉每帧重栅格化。切出短剧 tab 后恢复毛玻璃。
+                  child: eink
+                      ? Container(
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(28),
+                            border: Border.all(color: Colors.black, width: 0.8),
+                          ),
+                          child: navBar,
+                        )
+                      : isDramaTab || oled
+                      ? staticNavBar
+                      : BackdropFilter(
+                          filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+                          child: staticNavBar,
                         ),
-                        child: navBar,
-                      )
-                    : isDramaTab || oled
-                    ? staticNavBar
-                    : BackdropFilter(
-                        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-                        child: staticNavBar,
-                      ),
+                ),
               ),
             ),
           ),

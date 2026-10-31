@@ -518,7 +518,7 @@ class _DetailPageState extends State<DetailPage> {
                 leading: Padding(
                   padding: const EdgeInsets.only(left: 10),
                   child: Center(
-                    child: IconButton(
+                    child: RemoteBackButton(
                       tooltip: '返回',
                       onPressed: () => Navigator.maybePop(context),
                       style: IconButton.styleFrom(

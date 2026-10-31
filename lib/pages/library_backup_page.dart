@@ -130,7 +130,7 @@ class _LibraryBackupPageState extends State<LibraryBackupPage> {
       canPop: enabled,
       child: Scaffold(
         backgroundColor: palette.canvas,
-        appBar: AppBar(
+        appBar: remotePageAppBar(context,
           title: const Text('备份与导入'),
           centerTitle: true,
           backgroundColor: palette.canvas,
@@ -316,7 +316,6 @@ class _LibraryBackupPageState extends State<LibraryBackupPage> {
       ),
     );
   }
-
   Widget _label(String text, {Key? key}) => Padding(
     key: key,
     padding: const EdgeInsets.only(left: 4, bottom: 10),

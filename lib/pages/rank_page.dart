@@ -1,5 +1,4 @@
 import 'dart:async';
-
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
@@ -237,6 +236,7 @@ class _RankPageState extends State<RankPage> {
     return Scaffold(
       backgroundColor: palette.canvas,
       appBar: AppBar(
+        leading: remotePageBackButton(context),
         backgroundColor: palette.canvas,
         surfaceTintColor: Colors.transparent,
         scrolledUnderElevation: 0,
@@ -316,7 +316,7 @@ class _RankPageState extends State<RankPage> {
         final category = _catalog.categories[index];
         final selected = index == _categoryIndex;
         return Center(
-          child: GestureDetector(
+          child: RemoteGestureDetector(
             key: ValueKey('rank_category_${category.id}'),
             onTap: () => _selectCategory(index),
             child: Text(

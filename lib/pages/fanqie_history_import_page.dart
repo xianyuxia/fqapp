@@ -245,7 +245,7 @@ class _FanqieHistoryImportPageState extends State<FanqieHistoryImportPage> {
       canPop: !_busy,
       child: Scaffold(
         backgroundColor: palette.canvas,
-        appBar: AppBar(
+        appBar: remotePageAppBar(context,
           title: const Text('导入番茄书架'),
           centerTitle: true,
           backgroundColor: palette.canvas,
@@ -556,7 +556,6 @@ class _FanqieHistoryImportPageState extends State<FanqieHistoryImportPage> {
       ),
     );
   }
-
   Widget _label(String text, {Key? key}) => Padding(
     key: key,
     padding: const EdgeInsets.only(left: 4, bottom: 10),

@@ -190,9 +190,9 @@ class _SearchPageState extends State<SearchPage> {
         }
       } catch (_) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('评分筛选未保存，本次选择仍有效')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('评分筛选未保存，本次选择仍有效')));
       }
     });
   }
@@ -538,6 +538,7 @@ class _SearchPageState extends State<SearchPage> {
     return Scaffold(
       backgroundColor: palette.canvas,
       appBar: AppBar(
+        leading: remotePageBackButton(context),
         titleSpacing: 0,
         backgroundColor: palette.canvas,
         elevation: 0,
@@ -551,7 +552,7 @@ class _SearchPageState extends State<SearchPage> {
           ),
           child: TextField(
             controller: _ctrl,
-            autofocus: false,
+            autofocus: androidRemoteEnabled,
             textInputAction: TextInputAction.search,
             style: TextStyle(fontSize: 14, color: palette.ink),
             decoration: InputDecoration(
@@ -902,8 +903,7 @@ class _SearchPageState extends State<SearchPage> {
                 [
                   if (item.author.isNotEmpty) item.author,
                   kindLabels[item.kind] ?? item.kind,
-                  if (mediaLengthLabel(item).isNotEmpty)
-                    mediaLengthLabel(item),
+                  if (mediaLengthLabel(item).isNotEmpty) mediaLengthLabel(item),
                   if (item.score != null)
                     '${item.score!.toStringAsFixed(1)}分'
                   else
@@ -940,12 +940,10 @@ class _SearchPageState extends State<SearchPage> {
     if (feed.error != null) {
       return Padding(
         padding: const EdgeInsets.only(top: 16, bottom: 24),
-        child: GestureDetector(
+        child: RemoteGestureDetector(
           onTap: _loadMore,
           behavior: HitTestBehavior.opaque,
-          child: Center(
-            child: Text('加载失败，点击重试', style: style),
-          ),
+          child: Center(child: Text('加载失败，点击重试', style: style)),
         ),
       );
     }

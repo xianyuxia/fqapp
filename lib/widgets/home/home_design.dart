@@ -3,6 +3,11 @@ import 'package:flutter/physics.dart';
 
 import '../../services/app_theme.dart';
 
+import '../remote_focus.dart';
+
+export '../remote_focus.dart';
+export '../remote_navigation.dart';
+
 /// The home surface keeps its warm paper / tomato identity in both themes.
 class HomePalette {
   static const accent = Color(0xFFEF5038);
@@ -168,7 +173,7 @@ class _HomePressableState extends State<HomePressable>
       button: true,
       child: Material(
         color: Colors.transparent,
-        child: InkWell(
+        child: RemoteInkWell(
           onTap: widget.onTap,
           onLongPress: widget.onLongPress,
           onTapDown: (_) => _press(true),

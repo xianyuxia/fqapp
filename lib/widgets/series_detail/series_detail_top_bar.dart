@@ -25,7 +25,7 @@ class SeriesDetailTopBar extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
         child: Align(
           alignment: Alignment.centerLeft,
-          child: IconButton(
+          child: RemoteBackButton(
             key: const ValueKey('series-detail-back'),
             tooltip: '返回',
             onPressed: onBack,

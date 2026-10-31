@@ -556,7 +556,7 @@ void main() {
     expect(find.text('漫剧'), findsOneWidget);
     // 频道 tag 的按压反馈也走圆角，不再是一块方角高亮。
     final channelInk = tester.widget<InkWell>(
-      find.ancestor(of: find.text('推荐'), matching: find.byType(InkWell)).first,
+      find.ancestor(of: find.text('推荐'), matching: find.byWidgetPredicate((w) => w is InkWell)).first,
     );
     expect(channelInk.borderRadius, BorderRadius.circular(12));
     expect(find.byKey(const Key('drama_search_button')), findsOneWidget);
@@ -673,7 +673,7 @@ void main() {
     await _flush(tester);
 
     final tab = tester.getRect(
-      find.ancestor(of: find.text('推荐'), matching: find.byType(InkWell)).first,
+      find.ancestor(of: find.text('推荐'), matching: find.byWidgetPredicate((w) => w is InkWell)).first,
     );
     final search = tester.getRect(find.byKey(const Key('drama_search_button')));
     // 24sp 在 2 倍字号下已有 52.8dp 高，锁死 38dp 会溢出；条带要跟着长高。
@@ -1199,7 +1199,7 @@ void main() {
       // chips 上沿会钻到频道条里 5dp。
       final strip = tester.getRect(
         find
-            .ancestor(of: find.text('推荐'), matching: find.byType(InkWell))
+            .ancestor(of: find.text('推荐'), matching: find.byWidgetPredicate((w) => w is InkWell))
             .first,
       );
       final chips = tester.getRect(

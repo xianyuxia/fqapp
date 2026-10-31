@@ -37,11 +37,14 @@ class _LazyIndexedStackState extends State<LazyIndexedStack> {
     index: widget.index,
     children: [
       for (var index = 0; index < widget.children.length; index++)
-        TickerMode(
-          enabled: index == widget.index,
-          child: _visited.contains(index)
-              ? widget.children[index]
-              : const SizedBox.shrink(),
+        ExcludeFocus(
+          excluding: index != widget.index,
+          child: TickerMode(
+            enabled: index == widget.index,
+            child: _visited.contains(index)
+                ? widget.children[index]
+                : const SizedBox.shrink(),
+          ),
         ),
     ],
   );

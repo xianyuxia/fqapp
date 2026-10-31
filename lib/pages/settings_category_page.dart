@@ -80,6 +80,7 @@ class _SettingsCategoryPageState extends State<SettingsCategoryPage> {
     return Scaffold(
       backgroundColor: palette.canvas,
       appBar: AppBar(
+        leading: remotePageBackButton(context),
         title: Text(widget.title),
         centerTitle: true,
         backgroundColor: palette.canvas,
@@ -96,20 +97,13 @@ class _SettingsCategoryPageState extends State<SettingsCategoryPage> {
             child: Container(
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(20),
-                border: Border.all(
-                  color: palette.line,
-                  width: 0.6,
-                ),
+                border: Border.all(color: palette.line, width: 0.6),
               ),
               child: Column(
                 children: [
                   for (var i = 0; i < items.length; i++) ...[
                     if (i > 0)
-                      Divider(
-                        height: 1,
-                        indent: 68,
-                        color: palette.line,
-                      ),
+                      Divider(height: 1, indent: 68, color: palette.line),
                     _buildRow(items[i]),
                   ],
                 ],
@@ -149,10 +143,7 @@ class _SettingsCategoryPageState extends State<SettingsCategoryPage> {
           ? null
           : Text(
               item.subtitle!,
-              style: TextStyle(
-                fontSize: 12.5,
-                color: palette.muted,
-              ),
+              style: TextStyle(fontSize: 12.5, color: palette.muted),
             ),
       trailing: item.trailingBuilder?.call(context) ?? item.trailing,
     );

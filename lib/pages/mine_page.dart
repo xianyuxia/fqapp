@@ -117,6 +117,7 @@ class _MinePageState extends State<MinePage> {
     return Scaffold(
       backgroundColor: palette.canvas,
       appBar: AppBar(
+        leading: remotePageBackButton(context),
         title: const Text('我的'),
         centerTitle: false,
         backgroundColor: palette.canvas,

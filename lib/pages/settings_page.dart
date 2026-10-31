@@ -147,7 +147,6 @@ class SettingsPage extends StatelessWidget {
         items: const [],
       ),
     ];
-
     const categoryColors = [
       Color(0xFFEF5038), // 外观
       Color(0xFF14B8A6), // 阅读
@@ -161,6 +160,7 @@ class SettingsPage extends StatelessWidget {
     return Scaffold(
       backgroundColor: palette.canvas,
       appBar: AppBar(
+        leading: remotePageBackButton(context),
         title: const Text('设置'),
         centerTitle: true,
         backgroundColor: palette.canvas,

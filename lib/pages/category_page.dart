@@ -64,11 +64,9 @@ const int _chipMinColumns = 3;
 const int _chipMaxColumns = 10;
 
 /// 按内容区可用宽度（已扣掉左右 padding）算列数。
-int _chipColumnsFor(double contentWidth) =>
-    (contentWidth / _chipTargetWidth).floor().clamp(
-      _chipMinColumns,
-      _chipMaxColumns,
-    );
+int _chipColumnsFor(double contentWidth) => (contentWidth / _chipTargetWidth)
+    .floor()
+    .clamp(_chipMinColumns, _chipMaxColumns);
 
 class _CategoryPageState extends State<CategoryPage> {
   CategoryFront? _front;
@@ -147,9 +145,7 @@ class _CategoryPageState extends State<CategoryPage> {
   /// 官方该组是跨 dim 精选，数据不可得，用全量保内容），其余 dim 各一组，
   /// 空组跳过。游离 dim 的瓦片只出现在首组。
   static List<_Section> _sectionsFor(CategoryFront front) {
-    final out = <_Section>[
-      _Section('热门标签', front.tiles),
-    ];
+    final out = <_Section>[_Section('热门标签', front.tiles)];
     for (final dim in front.dims) {
       if (dim.value == '0') continue;
       final tiles = front.tiles.where((t) => t.dim == dim.value).toList();
@@ -192,13 +188,16 @@ class _CategoryPageState extends State<CategoryPage> {
   void _scrollToSection(int index) {
     if (!_scroll.hasClients) return;
     setState(() => _selected = index);
-    final target = _sectionOffset(index)
-        .clamp(0.0, _scroll.position.maxScrollExtent)
-        .toDouble();
+    final target = _sectionOffset(
+      index,
+    ).clamp(0.0, _scroll.position.maxScrollExtent).toDouble();
     _programmaticScroll = true;
     _scroll
-        .animateTo(target, duration: const Duration(milliseconds: 300),
-            curve: Curves.ease)
+        .animateTo(
+          target,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.ease,
+        )
         .whenComplete(() {
           _programmaticScroll = false;
           if (mounted && _selected != index) {
@@ -234,7 +233,9 @@ class _CategoryPageState extends State<CategoryPage> {
                 child: CircularProgressIndicator(color: HomePalette.accent),
               )
             else if (_error != null)
-              Expanded(child: _ErrorView(message: _error!, onRetry: _load))
+              Expanded(
+                child: _ErrorView(message: _error!, onRetry: _load),
+              )
             else if (front != null)
               Expanded(
                 // 列数按实际内容区宽度算：手机仍是官方三列，桌面按 170dp
@@ -291,9 +292,13 @@ class _TopBar extends StatelessWidget {
           if (isWindowsDesktop)
             const SizedBox(width: 16)
           else
-            IconButton(
+            RemoteBackButton(
               key: const Key('category_back'),
-              icon: Icon(LucideIcons.chevron_left, size: 24, color: palette.ink),
+              icon: Icon(
+                LucideIcons.chevron_left,
+                size: 24,
+                color: palette.ink,
+              ),
               onPressed: () => Navigator.maybePop(context),
             ),
           Expanded(
@@ -307,7 +312,7 @@ class _TopBar extends StatelessWidget {
                     itemBuilder: (context, index) {
                       final tab = tabs[index];
                       final isSelected = int.tryParse(tab.value) == selected;
-                      return GestureDetector(
+                      return RemoteGestureDetector(
                         key: ValueKey('category_tab_${tab.value}'),
                         behavior: HitTestBehavior.opaque,
                         onTap: () => onSelect(tab.value),
@@ -365,7 +370,7 @@ class _DimRail extends StatelessWidget {
           itemCount: sections.length,
           itemBuilder: (context, index) {
             final selected = index == selectedIndex;
-            return GestureDetector(
+            return RemoteGestureDetector(
               key: ValueKey('category_dim_$index'),
               behavior: HitTestBehavior.opaque,
               onTap: () => onSelect(index),
@@ -405,9 +410,7 @@ class _SectionList extends StatelessWidget {
     return Container(
       decoration: BoxDecoration(
         color: palette.canvas,
-        borderRadius: const BorderRadius.horizontal(
-          left: Radius.circular(12),
-        ),
+        borderRadius: const BorderRadius.horizontal(left: Radius.circular(12)),
       ),
       clipBehavior: Clip.antiAlias,
       child: ListView.builder(
@@ -457,10 +460,7 @@ class _SectionView extends StatelessWidget {
         ),
         for (var i = 0; i < visible.length; i += columns)
           _ChipRow(
-            tiles: visible.sublist(
-              i,
-              (i + columns).clamp(0, visible.length),
-            ),
+            tiles: visible.sublist(i, (i + columns).clamp(0, visible.length)),
             columns: columns,
           ),
       ],
@@ -498,7 +498,7 @@ class _SectionHeader extends StatelessWidget {
           children: [
             Text(title, style: TextStyle(fontSize: 12, color: gray)),
             if (collapsible)
-              GestureDetector(
+              RemoteGestureDetector(
                 key: ValueKey('category_expand_toggle_$keyIndex'),
                 behavior: HitTestBehavior.opaque,
                 onTap: onToggle,

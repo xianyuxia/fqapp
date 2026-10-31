@@ -86,6 +86,7 @@ class _AuthorPageState extends State<AuthorPage> {
     return Scaffold(
       backgroundColor: palette.canvas,
       appBar: AppBar(
+        leading: remotePageBackButton(context),
         backgroundColor: palette.canvas,
         surfaceTintColor: Colors.transparent,
         scrolledUnderElevation: 0,

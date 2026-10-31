@@ -29,7 +29,7 @@ class SeriesDetailBookSection extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const SeriesSectionHeader(title: '原著小说'),
-          GestureDetector(
+          RemoteGestureDetector(
             behavior: HitTestBehavior.opaque,
             onTap: onOpen,
             child: Container(

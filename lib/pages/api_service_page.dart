@@ -99,9 +99,7 @@ class _ApiServicePageState extends State<ApiServicePage> {
 
   String get _base {
     final base = BackendService.instance.baseUrl;
-    return base.endsWith('/')
-        ? base.substring(0, base.length - 1)
-        : base;
+    return base.endsWith('/') ? base.substring(0, base.length - 1) : base;
   }
 
   /// Port the core is bound to, taken from [baseUrl] so the LAN rows and the
@@ -124,8 +122,11 @@ class _ApiServicePageState extends State<ApiServicePage> {
     var ok = false;
     try {
       final base = BackendService.instance.baseUrl;
-      final response = await BackendService.instance.transport
-          .send('GET', Uri.parse('$base/health'), timeout: const Duration(seconds: 3));
+      final response = await BackendService.instance.transport.send(
+        'GET',
+        Uri.parse('$base/health'),
+        timeout: const Duration(seconds: 3),
+      );
       if (response.statusCode == 200) {
         ok = true;
         try {
@@ -170,7 +171,8 @@ class _ApiServicePageState extends State<ApiServicePage> {
         try {
           final decoded = jsonDecode(utf8.decode(response.body));
           if (decoded is Map && decoded['devices'] is num) {
-            result = '通了 · HTTP 200 · ${(decoded['devices'] as num).toInt()} 个设备';
+            result =
+                '通了 · HTTP 200 · ${(decoded['devices'] as num).toInt()} 个设备';
           }
         } catch (_) {}
       }
@@ -254,6 +256,7 @@ class _ApiServicePageState extends State<ApiServicePage> {
     return Scaffold(
       backgroundColor: palette.canvas,
       appBar: AppBar(
+        leading: remotePageBackButton(context),
         title: const Text('本地接口'),
         centerTitle: true,
         backgroundColor: palette.canvas,
@@ -337,9 +340,7 @@ class _ApiServicePageState extends State<ApiServicePage> {
                     child: Row(
                       children: [
                         Icon(
-                          _lanShare
-                              ? LucideIcons.wifi
-                              : LucideIcons.wifi_off,
+                          _lanShare ? LucideIcons.wifi : LucideIcons.wifi_off,
                           size: 16,
                           color: palette.muted,
                         ),
@@ -397,8 +398,7 @@ class _ApiServicePageState extends State<ApiServicePage> {
           // 接口是参考信息，默认收起；要用的人自己点开。
           const SizedBox(height: 8),
           TextButton.icon(
-            onPressed: () =>
-                setState(() => _showEndpoints = !_showEndpoints),
+            onPressed: () => setState(() => _showEndpoints = !_showEndpoints),
             icon: Icon(
               _showEndpoints
                   ? LucideIcons.chevron_down

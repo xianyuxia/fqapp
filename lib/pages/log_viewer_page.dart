@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:collection';
-
 import 'package:flutter/material.dart';
+import '../widgets/remote_navigation.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
@@ -530,7 +530,7 @@ class _LogViewerPageState extends State<LogViewerPage>
         ObjectKey(_displayEntries[i]): _displayEntries.length - 1 - i,
     };
     return Scaffold(
-      appBar: AppBar(
+      appBar: remotePageAppBar(context,
         title: const Text('日志'),
         actions: [
           IconButton(
@@ -612,7 +612,6 @@ class _LogViewerPageState extends State<LogViewerPage>
       ),
     );
   }
-
   Widget _buildToolbar() {
     final colors = Theme.of(context).colorScheme;
     final filterCount =
