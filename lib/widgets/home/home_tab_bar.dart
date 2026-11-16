@@ -85,39 +85,46 @@ class HomeTabBar extends StatelessWidget {
     final category = categories[index];
     return Semantics(
       selected: selected,
-      child: HomePressable(
+      child: RemoteFocus(
         key: ValueKey('home_category_$index'),
-        onTap: () => onSelect(index),
-        borderRadius: BorderRadius.zero,
-        // Stack follows the label width inside the horizontal scroll view.
-        child: Stack(
-          children: [
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              child: AnimatedDefaultTextStyle(
-                duration: duration,
-                curve: Curves.easeOutCubic,
-                style: TextStyle(
-                  fontSize: selected ? selectedSize : unselectedSize,
-                  height: 1.1,
-                  fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-                  color: selected ? palette.ink : palette.muted,
+        onActivate: () => onSelect(index),
+        framePadding: const EdgeInsets.symmetric(horizontal: 10),
+        child: ExcludeFocus(
+          excluding: androidRemoteEnabled,
+          child: HomePressable(
+            onTap: () => onSelect(index),
+            borderRadius: BorderRadius.zero,
+            // Stack follows the label width inside the horizontal scroll view.
+            child: Stack(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  child: AnimatedDefaultTextStyle(
+                    duration: duration,
+                    curve: Curves.easeOutCubic,
+                    style: TextStyle(
+                      fontSize: selected ? selectedSize : unselectedSize,
+                      height: 1.1,
+                      fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                      color: selected ? palette.ink : palette.muted,
+                    ),
+                    child: Text(category.label, maxLines: 1),
+                  ),
                 ),
-                child: Text(category.label, maxLines: 1),
-              ),
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  height: 2,
+                  child: AnimatedContainer(
+                    duration: duration,
+                    curve: Curves.easeOutCubic,
+                    color: selected ? palette.mark : Colors.transparent,
+                  ),
+                ),
+              ],
             ),
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 0,
-              height: 2,
-              child: AnimatedContainer(
-                duration: duration,
-                curve: Curves.easeOutCubic,
-                color: selected ? palette.mark : Colors.transparent,
-              ),
-            ),
-          ],
+          ),
         ),
       ),
     );

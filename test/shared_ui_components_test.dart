@@ -224,7 +224,7 @@ void main() {
     );
     final hit = find.descendant(
       of: find.byKey(const Key('footer-retry')),
-      matching: find.byType(GestureDetector),
+      matching: find.byWidgetPredicate((widget) => widget is GestureDetector),
     );
     expect(tester.getSize(hit).height, greaterThanOrEqualTo(44));
     await tester.tap(find.text('加载失败，点击重试'));
@@ -381,7 +381,9 @@ void main() {
     expect(find.byTooltip('返回'), findsOneWidget);
     final icon = tester.widget<Icon>(find.byIcon(LucideIcons.chevron_left));
     expect(icon.size, 20);
-    final button = tester.widget<IconButton>(find.byType(IconButton));
+    final button = tester.widget<IconButton>(
+      find.byWidgetPredicate((widget) => widget is IconButton),
+    );
     expect(button.tooltip, '返回');
   });
 

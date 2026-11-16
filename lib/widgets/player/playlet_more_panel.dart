@@ -1,5 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 
+import '../remote_focus.dart';
+
 // Note: 官方分支、档位动画和关闭边界见
 // .agents/notes/implemented/feature/2026-09-26-playlet-more-panel.md
 /// 短剧「视频设置」的深色 V2 形态（底部 sheet）。
@@ -159,7 +161,7 @@ class _PlayletMorePanelState extends State<PlayletMorePanel> {
                     Semantics(
                       key: const ValueKey('player-more-cancel-row'),
                       button: true,
-                      child: InkWell(
+                      child: RemoteInkWell(
                         key: const ValueKey('player-more-cancel'),
                         onTap: () => Navigator.pop(context),
                         child: Container(
@@ -194,7 +196,7 @@ class _PlayletMorePanelState extends State<PlayletMorePanel> {
     button: true,
     onTap: onTap,
     excludeSemantics: true,
-    child: InkWell(
+    child: RemoteInkWell(
       onTap: onTap,
       excludeFromSemantics: true,
       child: ConstrainedBox(
@@ -228,7 +230,7 @@ class _PlayletMorePanelState extends State<PlayletMorePanel> {
         toggled: value,
         onTap: onTap,
         excludeSemantics: true,
-        child: InkWell(
+        child: RemoteInkWell(
           onTap: onTap,
           excludeFromSemantics: true,
           child: ConstrainedBox(

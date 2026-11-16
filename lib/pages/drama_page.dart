@@ -1,3 +1,4 @@
+import '../widgets/remote_feed_navigation.dart';
 import '../widgets/video_player_chrome.dart';
 import '../services/desktop_platform.dart';
 
@@ -25,7 +26,6 @@ import '../services/episode_source_cache.dart';
 import '../services/frame_stats.dart';
 import '../services/shell_visibility.dart';
 import '../services/inline_video_playback.dart';
-import '../services/haptic_preferences.dart';
 
 import '../services/library_store.dart';
 import '../services/native_player.dart';
@@ -63,6 +63,8 @@ import 'player_page.dart';
 import 'search_page.dart';
 import 'series_detail_page.dart';
 import 'series_pager_physics.dart';
+
+part 'drama_page_remote.dart';
 
 /// One entry of the 短剧 tab's channel strip.
 ///
@@ -1556,178 +1558,182 @@ class _DramaPageState extends ConsumerState<DramaPage>
     // 图标亮度跟着页面走。
     final isVideoFlow = channel.playsInline;
     final lightPage = !isVideoFlow;
-    return AnnotatedRegion<SystemUiOverlayStyle>(
-      // 深色外观下浅色页也是深色画布，状态栏图标要跟着换成浅色。
-      value:
-          (lightPage && !palette.dark
-                  ? SystemUiOverlayStyle.dark
-                  : SystemUiOverlayStyle.light)
-              .copyWith(
-                // 预设样式把导航栏写成纯黑：浅色页底部要跟画布同色，
-                // 否则壳层 dock 换成浅色了，最底下还压着一条黑带。
-                systemNavigationBarColor: lightPage
-                    ? palette.canvas
-                    : Colors.black,
-                systemNavigationBarDividerColor: lightPage
-                    ? palette.canvas
-                    : Colors.black,
-                systemNavigationBarIconBrightness: lightPage && !palette.dark
-                    ? Brightness.dark
-                    : Brightness.light,
-              ),
-      child: Scaffold(
-        backgroundColor: lightPage ? palette.canvas : Colors.black,
-        body: Stack(
-          children: [
-            Positioned.fill(
-              // 最近 and 收藏 are lists in the official client too: the recent
-              // list comes from the device's own history and the follow list
-              // from the account, so neither is a video feed here either.
-              // 看剧/漫剧是浅色海报瀑布格（官方 StaggeredFeedTab，
-              // `client_template` 12/13），只有推荐走全屏竖滑播放流。
-              child: Listener(
-                behavior: HitTestBehavior.translucent,
-                onPointerDown: (event) {
-                  _channelPointers.add(event.pointer);
-                },
-                onPointerUp: (event) {
-                  _channelPointers.remove(event.pointer);
-                },
-                onPointerCancel: (event) {
-                  _channelPointers.remove(event.pointer);
-                },
-                child: TabSwipeArea.pages(
-                  key: ValueKey(
-                    _channels
-                        .map((c) => '${c.serverType}:${c.source}')
-                        .join(','),
+    return _remoteFeedNavigation(
+      _visibleItems(state),
+      AnnotatedRegion<SystemUiOverlayStyle>(
+        // 深色外观下浅色页也是深色画布，状态栏图标要跟着换成浅色。
+        value:
+            (lightPage && !palette.dark
+                    ? SystemUiOverlayStyle.dark
+                    : SystemUiOverlayStyle.light)
+                .copyWith(
+                  // 预设样式把导航栏写成纯黑：浅色页底部要跟画布同色，
+                  // 否则壳层 dock 换成浅色了，最底下还压着一条黑带。
+                  systemNavigationBarColor: lightPage
+                      ? palette.canvas
+                      : Colors.black,
+                  systemNavigationBarDividerColor: lightPage
+                      ? palette.canvas
+                      : Colors.black,
+                  systemNavigationBarIconBrightness: lightPage && !palette.dark
+                      ? Brightness.dark
+                      : Brightness.light,
+                ),
+        child: Scaffold(
+          backgroundColor: lightPage ? palette.canvas : Colors.black,
+          body: Stack(
+            children: [
+              Positioned.fill(
+                // 最近 and 收藏 are lists in the official client too: the recent
+                // list comes from the device's own history and the follow list
+                // from the account, so neither is a video feed here either.
+                // 看剧/漫剧是浅色海报瀑布格（官方 StaggeredFeedTab，
+                // `client_template` 12/13），只有推荐走全屏竖滑播放流。
+                child: Listener(
+                  behavior: HitTestBehavior.translucent,
+                  onPointerDown: (event) {
+                    _channelPointers.add(event.pointer);
+                  },
+                  onPointerUp: (event) {
+                    _channelPointers.remove(event.pointer);
+                  },
+                  onPointerCancel: (event) {
+                    _channelPointers.remove(event.pointer);
+                  },
+                  child: TabSwipeArea.pages(
+                    key: ValueKey(
+                      _channels
+                          .map((c) => '${c.serverType}:${c.source}')
+                          .join(','),
+                    ),
+                    index: _channel,
+                    count: _channels.length,
+                    onSelect: _selectChannel,
+                    onProgress: (value) {
+                      if (_channelScrolling) _armChannelScrollingWatchdog();
+                      if (_channelProgress.value != value) {
+                        _channelProgress.value = value;
+                      }
+                    },
+                    // 拖动时把邻页真的画出来。短剧的顶栏本来就在滑动区外面（不会被
+                    // 遮），但内容移开后那一侧原本只剩页面底色——深色视频频道下就是一
+                    // 块黑面板，和首页修掉的是同一个观感问题。
+                    onScrollStateChanged: _onChannelScroll,
+                    // 播放器打开、弹窗、最近频道编辑时都不该被横滑打断。
+                    enabled:
+                        !_modalOpen && _openingId == null && !_recentEditing,
+                    // 整片横滑都切频道，播放流也一样。唯一的例外是底部进度条：
+                    // 它自己带横向拖动、又比这里内层，所以只有那 24dp 归调进度，
+                    // 其余区域一律切频道（见 TabSwipeArea 的类文档）。
+                    // 只让内容跟手横移：频道条固定在顶部，切换后立刻显示新的
+                    // 选中项，不被动画拖着走。
+                    pageBuilder: (context, target) {
+                      final targetChannel = _channels[target];
+                      final targetState = target == _channel
+                          ? state
+                          : _channelStates[targetChannel.tabIndex] ??
+                                HomeState(tabIndex: targetChannel.tabIndex);
+                      return ColoredBox(
+                        color: targetChannel.playsInline
+                            ? Colors.black
+                            : HomePalette.of(context).canvas,
+                        child: _channelBody(
+                          target,
+                          targetChannel,
+                          targetState,
+                          targetState.items
+                              .where((item) => item.kind == targetChannel.kind)
+                              .toList(growable: false),
+                          active: target == _channel,
+                        ),
+                      );
+                    },
                   ),
-                  index: _channel,
-                  count: _channels.length,
-                  onSelect: _selectChannel,
-                  onProgress: (value) {
-                    if (_channelScrolling) _armChannelScrollingWatchdog();
-                    if (_channelProgress.value != value) {
-                      _channelProgress.value = value;
-                    }
-                  },
-                  // 拖动时把邻页真的画出来。短剧的顶栏本来就在滑动区外面（不会被
-                  // 遮），但内容移开后那一侧原本只剩页面底色——深色视频频道下就是一
-                  // 块黑面板，和首页修掉的是同一个观感问题。
-                  onScrollStateChanged: _onChannelScroll,
-                  // 播放器打开、弹窗、最近频道编辑时都不该被横滑打断。
-                  enabled: !_modalOpen && _openingId == null && !_recentEditing,
-                  // 整片横滑都切频道，播放流也一样。唯一的例外是底部进度条：
-                  // 它自己带横向拖动、又比这里内层，所以只有那 24dp 归调进度，
-                  // 其余区域一律切频道（见 TabSwipeArea 的类文档）。
-                  // 只让内容跟手横移：频道条固定在顶部，切换后立刻显示新的
-                  // 选中项，不被动画拖着走。
-                  pageBuilder: (context, target) {
-                    final targetChannel = _channels[target];
-                    final targetState = target == _channel
-                        ? state
-                        : _channelStates[targetChannel.tabIndex] ??
-                              HomeState(tabIndex: targetChannel.tabIndex);
-                    return ColoredBox(
-                      color: targetChannel.playsInline
-                          ? Colors.black
-                          : HomePalette.of(context).canvas,
-                      child: _channelBody(
-                        target,
-                        targetChannel,
-                        targetState,
-                        targetState.items
-                            .where((item) => item.kind == targetChannel.kind)
-                            .toList(growable: false),
-                        active: target == _channel,
-                      ),
-                    );
-                  },
                 ),
               ),
-            ),
-            Positioned(
-              top: MediaQuery.paddingOf(context).top + _topChromeHeight + 8,
-              left: 0,
-              right: 0,
-              child: DramaPullRefreshHint(
-                distance: _pullDistance,
-                color: lightPage ? palette.ink : Colors.white,
-              ),
-            ),
-            // 浅色页的顶栏背板：官方上滑时卡片从一条奶白渐变后面穿过，
-            // 搜索框/频道条不会和海报叠在一起（黑页保持透明压在视频上）。
-            // 最近频道进编辑后与官方一致：顶栏整个隐藏（`af()` gone）。
-            // 纯装饰背板必须放行点击——chips 行官方就落在它的淡出带里。
-            if (lightPage && !_recentEditing)
               Positioned(
-                top: 0,
+                top: MediaQuery.paddingOf(context).top + _topChromeHeight + 8,
                 left: 0,
                 right: 0,
-                child: IgnorePointer(
-                  child: SizedBox(
-                    height:
-                        MediaQuery.paddingOf(context).top +
-                        _topChromeHeight +
-                        56,
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topCenter,
-                          end: Alignment.bottomCenter,
-                          // 浅色支沿用官方奶白渐变；深色 / OLED 取当前画布色
-                          // 淡出，只负责把海报挡在顶栏后。
-                          colors: _topBackingColors(palette),
-                          stops: const [0.0, 0.5, 1.0],
+                child: DramaPullRefreshHint(
+                  distance: _pullDistance,
+                  color: lightPage ? palette.ink : Colors.white,
+                ),
+              ),
+              // 浅色页的顶栏背板：官方上滑时卡片从一条奶白渐变后面穿过，
+              // 搜索框/频道条不会和海报叠在一起（黑页保持透明压在视频上）。
+              // 最近频道进编辑后与官方一致：顶栏整个隐藏（`af()` gone）。
+              // 纯装饰背板必须放行点击——chips 行官方就落在它的淡出带里。
+              if (lightPage && !_recentEditing)
+                Positioned(
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  child: IgnorePointer(
+                    child: SizedBox(
+                      height:
+                          MediaQuery.paddingOf(context).top +
+                          _topChromeHeight +
+                          56,
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            // 浅色支沿用官方奶白渐变；深色 / OLED 取当前画布色
+                            // 淡出，只负责把海报挡在顶栏后。
+                            colors: _topBackingColors(palette),
+                            stops: const [0.0, 0.5, 1.0],
+                          ),
                         ),
                       ),
                     ),
                   ),
                 ),
-              ),
-            if (!_recentEditing &&
-                !(isWindowsDesktop && DesktopPlatform.fullscreen.value))
-              Positioned(
-                // 推荐（视频流）与看剧/漫剧（浅色页）切换时，下面的浅色
-                // 渐变背板会整体插入或移除，Stack 的子项下标随之错位。
-                // 不挂 key 的话顶栏会被整棵重建，标签放大动画一帧就走完。
-                key: const ValueKey('drama_top_bar'),
-                top: 0,
-                left: 0,
-                right: 0,
-                child: ValueListenableBuilder<double>(
-                  valueListenable: _channelProgress,
-                  builder: (context, progress, _) => _TopBar(
-                    channels: _channels,
-                    selected: _channel,
-                    onSelect: _selectChannel,
-                    onSearch: _openSearch,
-                    // 占位文案跟着频道语境走：漫剧频道搜漫剧，其余搜短剧。
-                    hint: _current.kind == 'manju'
-                        ? '请输入漫剧名或主演名'
-                        : '请输入短剧名或主演名',
-                    // 官方浅色页（看剧/漫剧）的顶栏换浅肤：深色字 + 浅灰搜索框。
-                    light: lightPage,
-                    // The strip lives outside the swipe area, so it cannot see
-                    // the drag offset; this is how the indicator follows the
-                    // finger.
-                    progress: progress,
+              if (!_recentEditing &&
+                  !(isWindowsDesktop && DesktopPlatform.fullscreen.value))
+                Positioned(
+                  // 推荐（视频流）与看剧/漫剧（浅色页）切换时，下面的浅色
+                  // 渐变背板会整体插入或移除，Stack 的子项下标随之错位。
+                  // 不挂 key 的话顶栏会被整棵重建，标签放大动画一帧就走完。
+                  key: const ValueKey('drama_top_bar'),
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  child: ValueListenableBuilder<double>(
+                    valueListenable: _channelProgress,
+                    builder: (context, progress, _) => _TopBar(
+                      channels: _channels,
+                      selected: _channel,
+                      onSelect: _selectChannel,
+                      onSearch: _openSearch,
+                      // 占位文案跟着频道语境走：漫剧频道搜漫剧，其余搜短剧。
+                      hint: _current.kind == 'manju'
+                          ? '请输入漫剧名或主演名'
+                          : '请输入短剧名或主演名',
+                      // 官方浅色页（看剧/漫剧）的顶栏换浅肤：深色字 + 浅灰搜索框。
+                      light: lightPage,
+                      // The strip lives outside the swipe area, so it cannot see
+                      // the drag offset; this is how the indicator follows the
+                      // finger.
+                      progress: progress,
+                    ),
                   ),
                 ),
-              ),
-            // 「上滑查看更多视频」：官方挂在全屏容器上、`gravity=bottom|center`
-            // + bottomMargin 94dp（`pp3.f.n()`）。注意官方主界面（`d5.xml`）的
-            // 底部 tab（50dp）是**悬浮压在 feed 上的**，所以 94dp 从 tab 底边算，
-            // 提示悬在 tab 栏上方约 44dp。本页 feed 止步于 NavigationBar 顶边，
-            // 同一视觉位置 = 94 - 官方 tab 高 50 = **44dp**。
-            if (_guideMounted && !isWindowsDesktop)
-              Positioned(
-                left: 16,
-                right: 16,
-                bottom: _effectiveBottomInset(context) + 16,
-                child: _SwipeUpHint(visible: _guideVisible),
-              ),
-          ],
+              // 「上滑查看更多视频」：官方挂在全屏容器上、`gravity=bottom|center`
+              // + bottomMargin 94dp（`pp3.f.n()`）。注意官方主界面（`d5.xml`）的
+              // 底部 tab（50dp）是**悬浮压在 feed 上的**，所以 94dp 从 tab 底边算，
+              // 提示悬在 tab 栏上方约 44dp。本页 feed 止步于 NavigationBar 顶边，
+              // 同一视觉位置 = 94 - 官方 tab 高 50 = **44dp**。
+              if (_guideMounted && !isWindowsDesktop)
+                Positioned(
+                  left: 16,
+                  right: 16,
+                  bottom: _effectiveBottomInset(context) + 16,
+                  child: _SwipeUpHint(visible: _guideVisible),
+                ),
+            ],
+          ),
         ),
       ),
     );
@@ -2758,7 +2764,7 @@ class _TopBarState extends State<_TopBar> {
     return Semantics(
       button: true,
       label: '搜索短剧',
-      child: GestureDetector(
+      child: RemoteGestureDetector(
         key: const Key('drama_search_button'),
         onTap: widget.onSearch,
         behavior: HitTestBehavior.opaque,
@@ -2856,7 +2862,7 @@ class _ChannelTab extends StatelessWidget {
       excludeSemantics: true,
       child: Material(
         color: Colors.transparent,
-        child: InkWell(
+        child: RemoteInkWell(
           onTap: onTap,
           // 点击水波也走圆角：方角高亮压在浅色页上像一块硬阴影。
           borderRadius: BorderRadius.circular(12),
@@ -2967,6 +2973,15 @@ class _DramaFeedCard extends StatelessWidget {
   /// player, so only it shows a seek bar (and only it reacts to gestures).
   bool get _interactive => playback != null;
 
+  Widget _remoteGestures() => _CardGestures(
+    key: ValueKey('drama_card_${item.kind}_${item.id}'),
+    enabled: _interactive,
+    onTap: onTogglePlay,
+    onPanelLongPress: onOpenMorePanel,
+    onBoostLongPressStart: () => unawaited(playback?.startBoost()),
+    onBoostLongPressEnd: () => unawaited(playback?.endBoost()),
+  );
+
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.sizeOf(context);
@@ -3030,14 +3045,7 @@ class _DramaFeedCard extends StatelessWidget {
           left: 0,
           right: 0,
           bottom: bottomInset + 160,
-          child: _CardGestures(
-            key: ValueKey('drama_card_${item.kind}_${item.id}'),
-            enabled: _interactive,
-            onTap: onTogglePlay,
-            onPanelLongPress: onOpenMorePanel,
-            onBoostLongPressStart: () => unawaited(playback?.startBoost()),
-            onBoostLongPressEnd: () => unawaited(playback?.endBoost()),
-          ),
+          child: _remoteGestures(),
         ),
         // Above the card's tap target, so the retry button wins its own taps.
         ?errorOverlay,
@@ -3247,80 +3255,6 @@ class _PlayPauseFeedback extends StatelessWidget {
 /// 而真正处理双击点赞的是另一条链路（`o.z7` → `lh3.a.onDoubleTap`），本仓库
 /// 不实现点赞，所以这里也不注册双击。
 ///
-/// Long-press is the official two-branch gesture (`jq3/x$q.onLongPress`
-/// `:2228-2262`）：命中横向中带（`K6()` `:2690-2711`，竖屏 50% / 横屏 33% 宽、
-/// 居中、Y 不限）且 `y7()` 处理成功 → 打开更多面板；带外才是速度层的 2×
-/// 快进，按住期间生效（`@string/ec6`=「2倍速快进中」，`cjx.xml`）。
-///
-/// **这里不再挂横向拖动。** 官方那张卡上左右滑是整屏调进度（`o.java:K6`，
-/// `bottomMargin=138dp`），但这条手势和「横滑切频道」是同一个操作的两套语义，
-/// 落在不同区域会互相打架。调进度收窄到底部进度条（`_SeekTrack` 自己带
-/// 横向拖动）：卡片其余区域一律归外层 [TabSwipeArea] 切频道，左边滑是
-/// 上一个频道、右边滑是下一个，不再随按下点在「调进度 / 切频道」之间跳。
-class _CardGestures extends StatelessWidget {
-  final bool enabled;
-  final VoidCallback onTap;
-  final VoidCallback onPanelLongPress;
-  final VoidCallback onBoostLongPressStart;
-  final VoidCallback onBoostLongPressEnd;
-
-  const _CardGestures({
-    super.key,
-    required this.enabled,
-    required this.onTap,
-    required this.onPanelLongPress,
-    required this.onBoostLongPressStart,
-    required this.onBoostLongPressEnd,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    if (!enabled) return const SizedBox.expand();
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        // 官方 `jq3/x.K6()`：中带宽 = 视图宽 ×（竖屏 0.5 / 横屏 0.33），
-        // 居中放置，Y 不限。横竖屏分档来自官方 `J6()`。
-        final bandFraction =
-            MediaQuery.orientationOf(context) == Orientation.landscape
-            ? 0.33
-            : 0.5;
-        bool inBand(double dx) {
-          final width = constraints.maxWidth;
-          if (width <= 0) return false;
-          final half = width * bandFraction / 2;
-          final center = width / 2;
-          return dx >= center - half && dx <= center + half;
-        }
-
-        return GestureDetector(
-          key: const Key('drama_card_gestures'),
-          // opaque：整块手势区自己吃指针，上滑翻页仍归外层 PageView 的竖直
-          // 拖动；横向则留给更外层的 TabSwipeArea（这里没有横向识别器，
-          // 竞技场里只剩它一个）。
-          behavior: HitTestBehavior.opaque,
-          // 没有双击手势了，单击立即派发（不再等双击窗口）。
-          onTap: onTap,
-          onLongPressStart: (details) {
-            if (inBand(details.localPosition.dx)) {
-              onPanelLongPress();
-            } else {
-              if (HapticPreferences.instance.value) {
-                HapticFeedback.lightImpact();
-              }
-              onBoostLongPressStart();
-            }
-          },
-          // 带外快进的收尾由 endBoost 的 _boosting 门挡住：中带开面板的
-          // 那支从未 startBoost，松手不能动速率。
-          onLongPressEnd: (_) => onBoostLongPressEnd(),
-          onLongPressCancel: onBoostLongPressEnd,
-          child: const SizedBox.expand(),
-        );
-      },
-    );
-  }
-}
-
 /// Official mute pill (`mq3.c` + `bvf.xml`).
 ///
 /// 108×36dp 展开态（20dp 静音图标距左 16、「取消静音」14sp 白字距右 12，
@@ -3379,7 +3313,7 @@ class _MuteHintState extends State<_MuteHint> {
         return Semantics(
           button: true,
           label: '取消静音',
-          child: GestureDetector(
+          child: RemoteGestureDetector(
             key: const Key('drama_mute_hint'),
             onTap: () {
               unawaited(widget.playback.toggleMute());
@@ -3576,7 +3510,7 @@ class _SeekTrackState extends State<_SeekTrack> {
           (widget.totalDuration.inMilliseconds * effectiveProgress).round();
       final previewDuration = Duration(milliseconds: previewMillis);
 
-      return GestureDetector(
+      return RemoteGestureDetector(
         key: const Key('drama_seek_bar'),
         behavior: HitTestBehavior.opaque,
         onHorizontalDragStart: (details) => seekTo(details.localPosition.dx),
@@ -3767,30 +3701,12 @@ class _InfoPanelState extends State<_InfoPanel> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         if (widget.onFullscreen != null) ...[
-          Center(
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                _EpisodePill(item: item, onTap: widget.onFullscreen!),
-                if (widget.onQuickCatalog != null) ...[
-                  const SizedBox(width: 8),
-                  _QuickCatalogButton(onTap: widget.onQuickCatalog!),
-                ],
-                if (widget.playback != null && widget.onLandscape != null) ...[
-                  const SizedBox(width: 8),
-                  _FullscreenRoundButton(
-                    playback: widget.playback!,
-                    onTap: widget.onLandscape!,
-                  ),
-                ],
-              ],
-            ),
-          ),
+          _remoteActionRow(),
           const SizedBox(height: 12),
         ],
         // 标题行：官方 `d6g.xml`。点击进剧集详情页（ql3/v0 `a1()` 默认分支），
         // 与播放页标题行同一路跳转；播放/暂停由卡片手势层承担。
-        GestureDetector(
+        RemoteGestureDetector(
           key: const Key('drama-series-title'),
           onTap: widget.onOpenSeriesDetail,
           behavior: HitTestBehavior.opaque,
@@ -3860,7 +3776,7 @@ class _InfoPanelState extends State<_InfoPanel> {
             active: widget.hotCommentActive,
           )
         else if (item.intro.isNotEmpty)
-          GestureDetector(
+          RemoteGestureDetector(
             onTap: () => setState(() => _expanded = !_expanded),
             behavior: HitTestBehavior.opaque,
             child: Row(
@@ -3929,8 +3845,9 @@ class _EpisodePill extends StatelessWidget {
     // `nk3.c.d()`：episodeCnt > 1 → `@string/e7v`=「观看全集·%s集」，
     // 否则 `@string/e7w`=「观看全片」。
     final label = count > 1 ? '观看全集·$count集' : '观看全片';
-    return GestureDetector(
+    return RemoteGestureDetector(
       key: const Key('drama_episode_pill'),
+      ensureVisible: false,
       onTap: onTap,
       behavior: HitTestBehavior.opaque,
       child: Container(
@@ -3978,7 +3895,9 @@ class _QuickCatalogButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
+    return RemoteGestureDetector(
+      key: const Key('drama_quick_catalog_button'),
+      ensureVisible: false,
       onTap: onTap,
       behavior: HitTestBehavior.opaque,
       child: Container(
@@ -4036,8 +3955,9 @@ class _FullscreenRoundButton extends StatelessWidget {
     builder: (context, landscape, _) {
       // `null`（还没解出尺寸）与竖版同样不渲染，避免闪出又消失。
       if (landscape != true) return const SizedBox.shrink();
-      return GestureDetector(
+      return RemoteGestureDetector(
         key: const Key('drama_fullscreen_button'),
+        ensureVisible: false,
         onTap: onTap,
         behavior: HitTestBehavior.opaque,
         child: Container(
@@ -4113,7 +4033,7 @@ class _FeedMessage extends StatelessWidget {
               ),
               if (actionLabel != null && onAction != null) ...[
                 const SizedBox(height: 16),
-                GestureDetector(
+                RemoteGestureDetector(
                   onTap: onAction,
                   behavior: HitTestBehavior.opaque,
                   child: Container(
@@ -4345,7 +4265,7 @@ class _InlineVideoError extends StatelessWidget {
                     style: const TextStyle(fontSize: 14, color: Colors.white),
                   ),
                   const SizedBox(height: 16),
-                  GestureDetector(
+                  RemoteGestureDetector(
                     key: ValueKey('drama_inline_retry_${item.kind}_${item.id}'),
                     onTap: onRetry,
                     behavior: HitTestBehavior.opaque,
@@ -4473,7 +4393,7 @@ class _HistoryCard extends StatelessWidget {
     final cardColor = palette.dark
         ? (editing ? palette.soft : palette.surface)
         : (editing ? const Color(0xFFFAFAFA) : Colors.white);
-    return GestureDetector(
+    return RemoteGestureDetector(
       onTap: onTap,
       onLongPress: onLongPress,
       behavior: HitTestBehavior.opaque,
@@ -4658,7 +4578,7 @@ class _BrowseCard extends StatelessWidget {
     final subtitle = _subtitle;
     final pixelRatio = MediaQuery.devicePixelRatioOf(context);
     final palette = HomePalette.of(context);
-    return GestureDetector(
+    return RemoteGestureDetector(
       onTap: onTap,
       behavior: HitTestBehavior.opaque,
       child: Column(
@@ -4778,7 +4698,7 @@ class _HistoryEmpty extends StatelessWidget {
           Text(message, style: TextStyle(fontSize: 14, color: palette.muted)),
           if (onFind != null) ...[
             const SizedBox(height: 20),
-            GestureDetector(
+            RemoteGestureDetector(
               key: const Key('drama_history_find'),
               onTap: onFind,
               behavior: HitTestBehavior.opaque,
@@ -5076,7 +4996,7 @@ class _LocalListState extends State<_LocalList> {
           ),
           const SizedBox(width: 8),
           if (filtered.isNotEmpty)
-            GestureDetector(
+            RemoteGestureDetector(
               key: const Key('drama_recent_edit'),
               behavior: HitTestBehavior.opaque,
               onTap: () => _setEditing(true),
@@ -5112,7 +5032,7 @@ class _LocalListState extends State<_LocalList> {
           children: [
             Row(
               children: [
-                GestureDetector(
+                RemoteGestureDetector(
                   key: const Key('drama_recent_select_all'),
                   behavior: HitTestBehavior.opaque,
                   onTap: () => setState(() {
@@ -5130,7 +5050,7 @@ class _LocalListState extends State<_LocalList> {
                   ),
                 ),
                 const Spacer(),
-                GestureDetector(
+                RemoteGestureDetector(
                   behavior: HitTestBehavior.opaque,
                   onTap: () => _setEditing(false),
                   child: Text(
@@ -5238,7 +5158,7 @@ class _LocalListState extends State<_LocalList> {
   }) {
     return Opacity(
       opacity: enabled ? 1 : 0.3,
-      child: GestureDetector(
+      child: RemoteGestureDetector(
         key: key,
         behavior: HitTestBehavior.opaque,
         onTap: onTap,

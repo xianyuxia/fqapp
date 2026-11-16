@@ -46,7 +46,7 @@ class HomeChip extends StatelessWidget {
       button: true,
       child: Material(
         color: Colors.transparent,
-        child: InkWell(
+        child: RemoteInkWell(
           onTap: onTap,
           customBorder: const StadiumBorder(),
           child: ConstrainedBox(

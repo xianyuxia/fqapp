@@ -9,6 +9,8 @@ import '../../models/media_item.dart';
 import '../home/home_design.dart';
 import 'player_toast.dart';
 
+part 'story_episode_drawer.dart';
+
 /// 官方选集格子（`bbw.xml` + `hj3/r0.java` + colors.xml）：
 /// 当前集 文字 `@color/aok`=#FFFA6725、底 `@color/aom`=#1AFA6725、粗体；
 /// 已看 文字 `skin_color_gray_40_light`=#66000000；普通 `skin_color_black_light`
@@ -348,7 +350,7 @@ class _StoryPlayerPanelState extends State<StoryPlayerPanel> {
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              GestureDetector(
+              RemoteGestureDetector(
                 key: const ValueKey('story-panel-series-title'),
                 behavior: HitTestBehavior.opaque,
                 onTap: widget.onOpenSeries,
@@ -564,7 +566,7 @@ class _StoryPlayerPanelState extends State<StoryPlayerPanel> {
           maxHeight: math.max(headerHeight, constraints.maxHeight),
           child: contents ??= Column(
             children: [
-              GestureDetector(
+              RemoteGestureDetector(
                 key: const ValueKey('story-panel-drag'),
                 behavior: HitTestBehavior.opaque,
                 onVerticalDragStart: widget.onDragStart,
@@ -667,7 +669,7 @@ class _StoryPlayerPanelState extends State<StoryPlayerPanel> {
 
   /// 官方关联原著条：封面 + 书名，右侧箭头（`aa8.xml:17` 的 `gnh`）。
   Widget _relateBookRow(EpisodeRelateBook book, HomePalette palette) =>
-      GestureDetector(
+      RemoteGestureDetector(
         behavior: HitTestBehavior.opaque,
         onTap: widget.onOpenRelateBook,
         child: Container(
@@ -723,7 +725,7 @@ class _StoryPlayerPanelState extends State<StoryPlayerPanel> {
         for (var page = 0; page <= _lastPage; page++)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 10),
-            child: GestureDetector(
+            child: RemoteGestureDetector(
               behavior: HitTestBehavior.opaque,
               onTap: () => _jumpToPage(page),
               child: Center(
@@ -811,7 +813,8 @@ class _StoryPlayerPanelState extends State<StoryPlayerPanel> {
           borderRadius: BorderRadius.all(Radius.circular(8)),
         ),
         clipBehavior: Clip.antiAlias,
-        child: InkWell(
+        child: RemoteInkWell(
+          autofocus: androidRemoteEnabled && index == widget.currentIndex,
           onTap: () => _select(index),
           child: Stack(
             children: [
@@ -941,147 +944,9 @@ class _StoryEpisodeDrawerState extends State<StoryEpisodeDrawer> {
     );
   }
 
+  bool _focusCurrent(int index) =>
+      androidRemoteEnabled && index == widget.currentIndex;
+
   @override
-  Widget build(BuildContext context) {
-    final playingIndex = widget.playingIndex ?? widget.currentIndex;
-    return Material(
-      key: const ValueKey('story-episode-drawer'),
-      color: const Color(0xFF141414),
-      // 抽屉贴在右缘：横向只该让开**右侧**的安全区（右挖孔机型），左边
-      // 那条是另一侧屏幕边缘的挖孔，套进来会把标题和格子整体推右。
-      child: SafeArea(
-        left: false,
-        child: Column(
-          children: [
-            SizedBox(
-              height: 64,
-              child: Stack(
-                children: [
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: IconButton(
-                      key: const ValueKey('story-drawer-close'),
-                      tooltip: '关闭',
-                      onPressed: widget.onClose,
-                      icon: const Icon(Icons.close, color: Colors.white),
-                    ),
-                  ),
-                  const Align(
-                    alignment: Alignment.center,
-                    child: Text(
-                      '选集',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
-                      ),
-                    ),
-                  ),
-                  if (widget.onOpenRelatedSeries != null)
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: TextButton(
-                        key: const ValueKey('story-drawer-related-series'),
-                        onPressed: widget.onOpenRelatedSeries,
-                        style: TextButton.styleFrom(
-                          foregroundColor: Colors.white,
-                        ),
-                        child: const Text('同系列'),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-            Expanded(
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  // 4 列方格：宽 =（抽屉宽 − 左右 24 − 列距 3×8）/ 4。
-                  _tile = (constraints.maxWidth - 24 - 24) / 4;
-                  return GridView.builder(
-                    controller: _scroll,
-                    padding: const EdgeInsets.fromLTRB(12, 4, 12, 16),
-                    gridDelegate:
-                        const SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: 4,
-                          mainAxisSpacing: 8,
-                          crossAxisSpacing: 8,
-                          childAspectRatio: 1,
-                        ),
-                    itemCount: widget.episodes.length,
-                    itemBuilder: (context, index) {
-                      final episode = widget.episodes[index];
-                      final active = index == playingIndex;
-                      final watched = !active && widget.watched.contains(index);
-                      return Semantics(
-                        key: ValueKey('story-episode-$index'),
-                        label: episode.hasKnownIndex
-                            ? '第 ${index + 1} 集'
-                            : '当前视频',
-                        value: active
-                            ? (widget.playing ? '正在播放' : '当前剧集')
-                            : null,
-                        button: true,
-                        selected: active,
-                        excludeSemantics: true,
-                        onTap: () => widget.onSelectEpisode(index),
-                        child: Material(
-                          color: active
-                              ? const Color(0xB3FA6725)
-                              : const Color(0x26FFFFFF),
-                          shape: const RoundedRectangleBorder(
-                            borderRadius: BorderRadius.all(Radius.circular(8)),
-                          ),
-                          clipBehavior: Clip.antiAlias,
-                          child: InkWell(
-                            onTap: () => widget.onSelectEpisode(index),
-                            child: Stack(
-                              children: [
-                                Center(
-                                  child: Text(
-                                    episode.hasKnownIndex
-                                        ? '${index + 1}'
-                                        : '当前',
-                                    style: TextStyle(
-                                      fontSize: 14,
-                                      fontWeight: active
-                                          ? FontWeight.bold
-                                          : FontWeight.normal,
-                                      color: active
-                                          ? _currentText
-                                          : watched
-                                          ? const Color(0x66FFFFFF)
-                                          : Colors.white,
-                                    ),
-                                  ),
-                                ),
-                                if (active)
-                                  Positioned(
-                                    top: 4,
-                                    right: 4,
-                                    child: SizedBox(
-                                      width: 12,
-                                      height: 12,
-                                      child: Lottie.asset(
-                                        'assets/lottie/video_playing_orange.json',
-                                        animate: widget.playing,
-                                        repeat: true,
-                                        fit: BoxFit.contain,
-                                      ),
-                                    ),
-                                  ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      );
-                    },
-                  );
-                },
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => _buildDrawer(context);
 }

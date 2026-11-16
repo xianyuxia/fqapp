@@ -203,7 +203,7 @@ class _SeriesDetailEpisodesState extends State<SeriesDetailEpisodes> {
   }
 
   Widget _expandLink(HomePalette palette, int start, int end) =>
-      GestureDetector(
+      RemoteGestureDetector(
         key: const ValueKey('series-episodes-expand'),
         behavior: HitTestBehavior.opaque,
         onTap: () => setState(() => _expanded = true),
@@ -246,7 +246,7 @@ class _SeriesDetailEpisodesState extends State<SeriesDetailEpisodes> {
   Widget _rangeChip(HomePalette palette, int page, bool selected) => Container(
     key: selected ? _selectedRangeKey : null,
     margin: const EdgeInsets.only(right: 6),
-    child: GestureDetector(
+    child: RemoteGestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: () => setState(() {
         _range = page;
@@ -278,7 +278,7 @@ class _SeriesDetailEpisodesState extends State<SeriesDetailEpisodes> {
       button: true,
       selected: _reversed,
       label: '倒序',
-      child: GestureDetector(
+      child: RemoteGestureDetector(
         key: const ValueKey('series-episode-reverse'),
         behavior: HitTestBehavior.opaque,
         onTap: () => setState(() => _reversed = !_reversed),
@@ -381,7 +381,7 @@ class _SeriesDetailEpisodesState extends State<SeriesDetailEpisodes> {
           side: border,
         ),
         clipBehavior: Clip.antiAlias,
-        child: InkWell(
+        child: RemoteInkWell(
           onTap: episode.disabled ? null : () => widget.onSelect(index),
           child: Center(
             child: Text(

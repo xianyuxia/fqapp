@@ -1,5 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 
+import '../remote_focus.dart';
+
 /// 播放页那颗「全屏观看 / 退出全屏」胶囊。
 ///
 /// 三个形态共用同一个组件，避免文案与内边距各写一份：竖屏目录态的
@@ -27,7 +29,7 @@ class PlayletFullscreenPill extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Semantics(
     button: true,
-    child: GestureDetector(
+    child: RemoteGestureDetector(
       key: const ValueKey('player-fullscreen-pill'),
       onTap: onTap,
       behavior: HitTestBehavior.opaque,

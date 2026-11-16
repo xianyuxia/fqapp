@@ -413,7 +413,7 @@ class _ClassicHomeTabBarState extends State<ClassicHomeTabBar> {
       label: category.label,
       excludeSemantics: true,
       onTap: () => widget.onSelect(index),
-      child: GestureDetector(
+      child: RemoteGestureDetector(
         key: ValueKey('home_category_$index'),
         behavior: HitTestBehavior.opaque,
         onTap: () => widget.onSelect(index),

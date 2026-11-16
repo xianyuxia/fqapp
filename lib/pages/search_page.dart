@@ -1481,6 +1481,7 @@ class _SearchPageState extends State<SearchPage> {
     return Scaffold(
       backgroundColor: palette.canvas,
       appBar: AppBar(
+        leading: remotePageBackButton(context),
         titleSpacing: 0,
         backgroundColor: palette.canvas,
         elevation: 0,
@@ -1786,7 +1787,7 @@ class _SearchPageState extends State<SearchPage> {
     if (feed.error != null) {
       return Padding(
         padding: EdgeInsets.only(top: 16, bottom: 24 + safeBottom),
-        child: GestureDetector(
+        child: RemoteGestureDetector(
           onTap: _loadMore,
           behavior: HitTestBehavior.opaque,
           child: ConstrainedBox(

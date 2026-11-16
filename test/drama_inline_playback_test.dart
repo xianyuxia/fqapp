@@ -1,3 +1,5 @@
+import 'package:fqapp/widgets/remote_feed_navigation.dart';
+import 'package:fqapp/widgets/player/playlet_quick_catalog_sheet.dart';
 import 'dart:async';
 import 'dart:io';
 
@@ -7,7 +9,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hive_ce/hive.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-
 import 'package:fqapp/models/media_item.dart';
 import 'package:fqapp/models/playlet_comment.dart';
 import 'package:fqapp/pages/drama_download_sheet.dart';
@@ -24,9 +25,8 @@ import 'package:fqapp/services/shelf_store.dart';
 import 'package:fqapp/services/shell_visibility.dart';
 import 'package:fqapp/services/swipe_guide_store.dart';
 import 'package:fqapp/widgets/player/playlet_danmaku_layer.dart';
-
 import 'support/controlled_player.dart';
-
+part 'drama_remote_feed_test_cases.dart';
 MediaItem _item(String label, {bool aiGenerated = false, String intro = ''}) =>
     MediaItem(
       id: label,
@@ -196,6 +196,7 @@ Future<void> _swipeUp(WidgetTester tester) async {
 late Directory _hiveDir;
 
 void main() {
+  _registerRemoteFeedTests();
   // The drama page reads the local shelf (for 追剧) from the store, so the box
   // has to exist before the first build.
   setUp(() async {

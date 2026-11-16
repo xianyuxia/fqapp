@@ -186,7 +186,7 @@ class _HomeHeroState extends State<HomeHero> {
 
   /// 搜索行右端的「分类」入口：与搜索框同高同圆角的 40dp 胶囊。
   Widget _categoryPill(HomePalette palette) {
-    return GestureDetector(
+    return RemoteGestureDetector(
       key: const Key('home_category_button'),
       behavior: HitTestBehavior.opaque,
       onTap: widget.onCategory,

@@ -1,5 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 
+import '../remote_focus.dart';
+
 /// 播放页右侧浮层的统一形态：贴右缘、全高、左圆角 12、200ms 从右滑入、
 /// 0.5 遮罩，宽度约为窗口的三分之一（夹在 240–420dp）。
 ///
@@ -240,7 +242,7 @@ class PlayerSidePanelRow extends StatelessWidget {
       toggled: switchValue,
       onTap: tap,
       excludeSemantics: true,
-      child: InkWell(
+      child: RemoteInkWell(
         key: ValueKey(rowKey),
         onTap: tap,
         excludeFromSemantics: true,
@@ -376,7 +378,7 @@ class PlayerSidePanelTile extends StatelessWidget {
       toggled: stateKey == null ? null : active,
       onTap: onTap,
       excludeSemantics: true,
-      child: InkWell(
+      child: RemoteInkWell(
         key: ValueKey(tileKey),
         onTap: onTap,
         excludeFromSemantics: true,
@@ -448,7 +450,8 @@ class PlayerSidePanelOptionList<T> extends StatelessWidget {
               itemBuilder: (context, index) {
                 final option = options[index];
                 final selected = isSelected(option.value);
-                return InkWell(
+                return RemoteInkWell(
+                  autofocus: androidRemoteEnabled && selected,
                   key: ValueKey('$panelKey-$index'),
                   onTap: () => Navigator.pop(context, option.value),
                   child: SizedBox(
