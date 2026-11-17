@@ -360,11 +360,10 @@ class _RemoteFocusPainter extends CustomPainter {
     if (!_remoteInput.value) return;
     final node = FocusManager.instance.primaryFocus;
     if (node == null || node is FocusScopeNode) return;
-    // Custom controls already paint a frame that follows their layout animation.
-    if (node.context?.findAncestorWidgetOfExactType<RemoteFocus>() != null) {
-      return;
-    }
-    final target = node.context?.findRenderObject();
+    final context = node.context;
+    if (context is! Element || !context.mounted) return;
+    // Focus can still refer to the previous tab for a frame after detaching it.
+    final target = context.renderObject;
     final host = root.currentContext?.findRenderObject();
     if (target is! RenderBox ||
         host is! RenderBox ||
@@ -373,6 +372,8 @@ class _RemoteFocusPainter extends CustomPainter {
         !host.hasSize) {
       return;
     }
+    // Custom controls already paint a frame that follows their layout animation.
+    if (context.findAncestorWidgetOfExactType<RemoteFocus>() != null) return;
     final origin = host.globalToLocal(target.localToGlobal(Offset.zero));
     final rect = (origin & target.size).intersect(Offset.zero & size);
     if (rect.isEmpty) return;
