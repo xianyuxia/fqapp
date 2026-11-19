@@ -5,6 +5,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart' show kTouchSlop;
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter/foundation.dart' show defaultTargetPlatform, kIsWeb;
 import 'package:flutter/services.dart';
 import 'package:lottie/lottie.dart';
 
@@ -44,6 +45,7 @@ import 'player/story_seek_bar.dart';
 
 part 'video_player_landscape_seek.dart';
 part 'video_player_keyboard.dart';
+part 'video_player_remote.dart';
 
 // Note: 移除短剧互动入口的范围见
 // .agents/notes/implemented/simplification/2026-09-26-playlet-social-controls.md
@@ -464,6 +466,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
 
   bool _boosting = false;
   bool _paging = false;
+  final _playbackKeyboard = _PlaybackKeyboardState();
   bool _appActive = true;
   bool _resumeOnForeground = false;
   int _panelAnimation = 0;
@@ -543,8 +546,6 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
             : 0.0);
   }
 
-  bool get _ready => widget.enabled && (widget.player?.isCreated ?? false);
-
   /// 片源尺寸是否已就绪。切集瞬间新播放器报 0×0，此时任何「按宽高比」
   /// 的判定都必须沿用现状：`sourceSize` 的 9:16 兜底会把横版片源判成
   /// 竖版，分屏/方向就会在每集开头来回翻一次。
@@ -604,6 +605,8 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
             : null);
     return vertical == true;
   }
+
+  void _setRemoteState(VoidCallback update) => setState(update);
 
   @override
   void initState() {
@@ -679,6 +682,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
       _sidePanelCollapsed = null;
       _bottomPanelCollapsed = false;
     }
+    _syncRemoteControls(oldWidget);
     if (oldWidget.player != widget.player) {
       _listenToPosition();
       // 换播放器等于换 holder：官方 `d.release()` 会摘掉锁监听，本地等价是
@@ -742,6 +746,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
   @override
   void dispose() {
     FocusManager.instance.removeEarlyKeyEventHandler(_handlePlaybackKey);
+    _playbackKeyboard.dispose();
     WidgetsBinding.instance.removeObserver(this);
     _hideTimer?.cancel();
     _doubleTapGuard?.cancel();
@@ -886,6 +891,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
         _locked ||
         !_appActive ||
         !widget.playing ||
+        _playbackKeyboard.navigating ||
         _seeking ||
         _overlayOpen ||
         _panelOpen ||
@@ -1103,6 +1109,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
     _endBoost();
     final interaction = ++_interaction;
     final pause = _playbackRequested;
+    if (!pause) _playbackKeyboard.navigating = false;
     unawaited(
       _control((player) async {
         if (pause) {
@@ -1788,7 +1795,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
                     children: [
                       // 通用播放器没有底栏当前档：留一行倍速入口，档位本身
                       // 不铺开在设置面板里（点开 [_showRatePicker]）。
-                      InkWell(
+                      RemoteInkWell(
                         key: const ValueKey('player-more-rate-row'),
                         onTap: () {
                           _pendingRatePicker = true;
@@ -2099,6 +2106,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
       _visible = true;
     });
     _scheduleHide();
+    if (_playbackKeyboard.navigating) _focusPageControls();
   }
 
   void _startPanelDrag(DragStartDetails details) {
@@ -2353,7 +2361,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
             systemNavigationBarColor: Colors.black,
             systemNavigationBarIconBrightness: Brightness.light,
           ),
-          child: _buildChrome(context),
+          child: _remotePageControls(_buildChrome(context)),
         );
 
   Widget _buildChrome(BuildContext context) {
@@ -2898,14 +2906,8 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
             !_seeking)
           Positioned.fromRect(
             rect: layout.viewport,
-            child: IgnorePointer(
-              child: Center(
-                child: Icon(
-                  Icons.play_arrow_rounded,
-                  size: 86,
-                  color: Colors.white.withValues(alpha: .2),
-                ),
-              ),
+            child: _pausedPlayIcon(
+              widget.shortSeries && !landscape && !compact,
             ),
           ),
         if (_seeking)
@@ -3525,7 +3527,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
   Widget _splitExpandButton() => Material(
     color: const Color(0x99000000),
     shape: const StadiumBorder(),
-    child: InkWell(
+    child: RemoteInkWell(
       key: const ValueKey('player-split-expand'),
       customBorder: const StadiumBorder(),
       onTap: () => setState(() => _splitCollapsed = false),
@@ -3818,7 +3820,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
         ),
         child: Row(
           children: [
-            IconButton(
+            RemoteBackButton(
               tooltip: '返回',
               onPressed: _back,
               icon: const Icon(
@@ -3908,7 +3910,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
   Widget _commentButton() => Semantics(
     button: true,
     label: '评论',
-    child: GestureDetector(
+    child: RemoteGestureDetector(
       key: const ValueKey('player-comment-button'),
       onTap: widget.onComments,
       behavior: HitTestBehavior.opaque,
@@ -4082,7 +4084,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
     VoidCallback onTap,
   ) => Semantics(
     button: true,
-    child: GestureDetector(
+    child: RemoteGestureDetector(
       key: ValueKey(key),
       behavior: HitTestBehavior.opaque,
       onTap: onTap,
@@ -4106,7 +4108,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
   Widget _screenTextButton(String key, String label, VoidCallback onTap) =>
       Semantics(
         button: true,
-        child: GestureDetector(
+        child: RemoteGestureDetector(
           key: ValueKey(key),
           behavior: HitTestBehavior.opaque,
           onTap: onTap,
@@ -4160,7 +4162,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
           if (showPill && !_hideFullscreenPill) const SizedBox(height: 12),
           // 官方标题行整行可点（ql3/v0 `a1()`，埋点 enter_from="title"），
           // 落点是剧集详情页。
-          GestureDetector(
+          RemoteGestureDetector(
             key: const ValueKey('player-series-title'),
             onTap: widget.onOpenSeriesDetail,
             behavior: HitTestBehavior.opaque,
@@ -4223,7 +4225,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
   Widget _originalBookCard(RelatedWork book, {bool edgeToEdge = false}) =>
       Padding(
         padding: const EdgeInsets.only(top: 12),
-        child: GestureDetector(
+        child: RemoteGestureDetector(
           key: const ValueKey('player-original-book'),
           onTap: widget.onOpenOriginalBook,
           behavior: HitTestBehavior.opaque,
@@ -4287,7 +4289,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
   /// `book_detail.creation_status` 取好传入；无数据只显示「选集 · 全N集」
   /// （官方文案 `@string/e6r`「全%s集」）。
   Widget _catalogBar(EdgeInsets insets, {bool compact = false}) {
-    final catalog = GestureDetector(
+    final catalog = RemoteGestureDetector(
       key: const ValueKey('player-catalog-bar'),
       onTap: _openPanel,
       behavior: HitTestBehavior.opaque,
@@ -4418,23 +4420,6 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
           ),
         ],
       ),
-    ),
-  );
-
-  Widget _transportButton(
-    String tooltip,
-    IconData icon,
-    VoidCallback? onPressed,
-  ) => SizedBox(
-    width: 40,
-    height: 48,
-    child: IconButton(
-      tooltip: tooltip,
-      onPressed: onPressed,
-      padding: EdgeInsets.zero,
-      color: Colors.white,
-      disabledColor: Colors.white24,
-      icon: Icon(icon, size: 25),
     ),
   );
 
@@ -4676,7 +4661,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
         // 能聚焦却点不动。
         onTap: () => unawaited(_selectEpisode(next)),
         excludeSemantics: true,
-        child: GestureDetector(
+        child: RemoteGestureDetector(
           key: const ValueKey('landscape-next-card'),
           behavior: HitTestBehavior.opaque,
           onTap: () => unawaited(_selectEpisode(next)),
@@ -4779,7 +4764,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
         child: Semantics(
           button: true,
           label: _locked ? '解锁屏幕' : '锁定屏幕',
-          child: GestureDetector(
+          child: RemoteGestureDetector(
             key: const ValueKey('landscape-lock'),
             behavior: HitTestBehavior.opaque,
             onTap: _toggleLock,
@@ -4833,6 +4818,9 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
     double minSize = 32,
   }) => IconButton(
     key: ValueKey(key),
+    focusNode: key == 'landscape-play' || key == 'compact-play'
+        ? _playbackKeyboard.play
+        : null,
     tooltip: tooltip,
     onPressed: onPressed,
     padding: EdgeInsets.zero,
@@ -4849,7 +4837,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
     String label,
     VoidCallback onPressed, {
     double minSize = 40,
-  }) => GestureDetector(
+  }) => RemoteGestureDetector(
     key: ValueKey(key),
     behavior: HitTestBehavior.opaque,
     onTap: onPressed,

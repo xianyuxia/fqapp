@@ -5,6 +5,11 @@ import '../../services/app_style_tokens.dart';
 import '../../services/app_theme.dart';
 import '../../services/app_theme_style.dart';
 
+import '../remote_focus.dart';
+
+export '../remote_focus.dart';
+export '../remote_navigation.dart';
+
 /// Home colours follow the inherited presentation, with device modes first.
 class HomePalette {
   static const accent = Color(0xFFEF5038);
@@ -201,7 +206,7 @@ class _HomePressableState extends State<HomePressable>
       button: true,
       child: Material(
         color: Colors.transparent,
-        child: InkWell(
+        child: RemoteInkWell(
           onTap: widget.onTap,
           onLongPress: widget.onLongPress,
           onTapDown: (_) => _press(true),

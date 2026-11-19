@@ -1,5 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 
+import '../remote_focus.dart';
+
 import 'player_toast.dart';
 import 'quality_icon.dart';
 
@@ -280,7 +282,7 @@ class PlayletMorePanelLight extends StatelessWidget {
     button: true,
     onTap: onTap,
     excludeSemantics: true,
-    child: InkWell(
+    child: RemoteInkWell(
       onTap: onTap,
       excludeFromSemantics: true,
       child: Padding(
@@ -391,7 +393,7 @@ class _SwitchRowState extends State<_SwitchRow> {
     toggled: _enabled,
     onTap: _toggle,
     excludeSemantics: true,
-    child: InkWell(
+    child: RemoteInkWell(
       onTap: _toggle,
       excludeFromSemantics: true,
       child: Padding(

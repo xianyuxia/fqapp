@@ -326,7 +326,7 @@ class _TopBar extends StatelessWidget {
           if (isWindowsDesktop)
             const SizedBox(width: 16)
           else
-            IconButton(
+            RemoteBackButton(
               key: const Key('category_back'),
               icon: Icon(
                 LucideIcons.chevron_left,
@@ -346,7 +346,7 @@ class _TopBar extends StatelessWidget {
                     itemBuilder: (context, index) {
                       final tab = tabs[index];
                       final isSelected = int.tryParse(tab.value) == selected;
-                      return GestureDetector(
+                      return RemoteGestureDetector(
                         key: ValueKey('category_tab_${tab.value}'),
                         behavior: HitTestBehavior.opaque,
                         onTap: () => onSelect(tab.value),
@@ -501,7 +501,7 @@ class _SectionHeader extends StatelessWidget {
           children: [
             Text(title, style: TextStyle(fontSize: 12, color: gray)),
             if (collapsible)
-              GestureDetector(
+              RemoteGestureDetector(
                 key: ValueKey('category_expand_toggle_$keyIndex'),
                 behavior: HitTestBehavior.opaque,
                 onTap: onToggle,

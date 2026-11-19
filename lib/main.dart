@@ -71,6 +71,10 @@ import 'widgets/dock_auto_hide.dart';
 import 'widgets/shell_dock.dart';
 import 'widgets/unsupported_feature_page.dart';
 import 'widgets/home/home_design.dart';
+import 'widgets/remote_root_navigation.dart';
+import 'services/sync/multi_device_sync_service.dart';
+import 'package:flutter/foundation.dart'
+    show LicenseRegistry, LicenseEntryWithLineBreaks;
 import 'widgets/home/home_skeleton.dart';
 import 'widgets/home/classic_home_skeleton.dart';
 
@@ -412,12 +416,12 @@ class _FqAppState extends State<FqApp> {
                             routes: _audioRoutes,
                             child: isWindowsDesktop
                                 ? DesktopAppFrame(child: playback)
-                                : playback,
+                                : RemoteFocusOverlay(child: playback),
                           ),
                         ),
                       );
                     },
-                    title: 'fqappX',
+                    title: '什锦铺',
                     debugShowCheckedModeBanner: false,
                     // OLED 纯黑只在深色下生效（浅色时 createTheme 直接忽略）。
                     theme: _theme(
@@ -658,6 +662,7 @@ class _RootShellState extends State<RootShell> with TickerProviderStateMixin {
   ///   beginUserScroll 转成 UserScrollNotification，鼠标滚轮每格都会让
   ///   dock 抖一下；PiliPlus 只有 Android/iOS，滚轮语义不同，直接禁用。
   /// - 墨水屏：局部刷新代价高，dock 显隐跳变会看到明显残影，完全禁用。
+  final _remoteDock = RemoteDockFocus();
   final DockAutoHide _dockAutoHide = DockAutoHide(
     disabledProbe: () =>
         isWindowsDesktop || isLinuxDesktop || einkModeNotifier.value,
@@ -686,6 +691,7 @@ class _RootShellState extends State<RootShell> with TickerProviderStateMixin {
       FrameStats.mark('shell tab $index');
       // 换页一律把 dock 带回：收起态下入口够不到，落点必须可见。
       _dockAutoHide.reveal();
+      _remoteDock.preserveOnSwitch(index);
       // 先广播可见性：页面据此暂停/恢复播放器与定时器，不靠 TickerMode 翻转
       // 触发整页重建。
       shellVisibleTab.value = index;
@@ -919,6 +925,7 @@ class _RootShellState extends State<RootShell> with TickerProviderStateMixin {
     _pageMotion.removeStatusListener(_onPageMotionStatus);
     _homeScroll.dispose();
     _dockAutoHide.dispose();
+    _remoteDock.dispose();
     _pageMotion.dispose();
     super.dispose();
   }
@@ -963,99 +970,109 @@ class _RootShellState extends State<RootShell> with TickerProviderStateMixin {
     // light / dark 两套预设都把它写成纯黑底 + 白图标，浅色页面下会在最底部
     // 留一条突兀的黑带；短剧只有视频流（推荐）背后是视频，仍用黑。
     final lightSystemIcons = dramaOnVideo || isDark;
-    return Scaffold(
-      extendBody: true,
-      // 状态栏图标亮度挂在壳层、按选中 tab 切换：短剧页是黑底视频流（官方
-      // SeriesMallFragment 的透明顶栏直接压在 feed 上），深色图标在黑底上
-      // 整条状态栏都看不见，必须浅色；其余三页浅色底用深色。样式放壳层而不是
-      // 各页内部，是因为 IndexedStack 里未选中的页不参与绘制，页内
-      // AnnotatedRegion 切走后会残留上一个页的样式。
-      body: AnnotatedRegion<SystemUiOverlayStyle>(
-        value:
-            (lightSystemIcons
-                    ? SystemUiOverlayStyle.light
-                    : SystemUiOverlayStyle.dark)
-                .copyWith(
-                  // 状态栏显式铺成画布色：透明状态栏在 Android 10+ 会被系统
-                  // 叠一层对比度黑纱，奶白画布会被压成灰带。短剧视频流仍透明。
-                  statusBarColor: dramaOnVideo
-                      ? Colors.transparent
-                      : palette.canvas,
-                  systemNavigationBarColor: dramaOnVideo
-                      ? Colors.black
-                      : palette.canvas,
-                  systemNavigationBarDividerColor: dramaOnVideo
-                      ? Colors.black
-                      : palette.canvas,
-                  systemNavigationBarIconBrightness: lightSystemIcons
-                      ? Brightness.light
-                      : Brightness.dark,
-                ),
-        child: NotificationListener<UserScrollNotification>(
-          // 底栏滚动自动隐藏（对齐 PiliPlus）：把用户拖动方向递送给控制器。
-          // 弹层与上层路由不在本壳层子树、通知不会经过这里，不会被误触发。
-          onNotification: _onShellUserScroll,
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              final width = constraints.maxWidth;
-              return AnimatedBuilder(
-                animation: _pageMotion,
-                builder: (context, _) {
-                  final page = _currentPage();
-                  return Stack(
-                    key: const ValueKey('root-page-stack'),
-                    fit: StackFit.expand,
-                    children: [
-                      for (var i = 0; i < 4; i++)
-                        if (_visitedTabs.contains(i))
-                          KeyedSubtree(
-                            key: ValueKey('root-tab-$i'),
-                            child: Offstage(
-                              key: ValueKey('root-tab-offstage-$i'),
-                              // 静止时只显示当前页；预挂载帧额外显示目标页
-                              // （Transform 放在屏外，完成 layout 但不显示）；
-                              // 动画中显示视口范围内的页（旧页滑出 + 新页滑入）。
-                              offstage:
-                                  !(i == _index ||
-                                      i == _premount ||
-                                      (_pageMotion.isAnimating &&
-                                          (i - page).abs() < 1)),
-                              child: Transform.translate(
-                                offset: Offset((i - page) * width, 0),
-                                // RepaintBoundary 把页面内容缓存为独立图层：
-                                // 动画期间 Transform 只移动图层（GPU 合成），
-                                // 不触发页面内容的逐帧 repaint。
-                                child: RepaintBoundary(
-                                  child: TickerMode(
-                                    enabled: i == _index,
-                                    child: _tabChild(i),
+    return RemoteRootNavigation(
+      dock: _remoteDock,
+      index: _index,
+      onSelect: _selectTab,
+      onRevealDock: _dockAutoHide.reveal,
+      child: Scaffold(
+        extendBody: true,
+        // 状态栏图标亮度挂在壳层、按选中 tab 切换：短剧页是黑底视频流（官方
+        // SeriesMallFragment 的透明顶栏直接压在 feed 上），深色图标在黑底上
+        // 整条状态栏都看不见，必须浅色；其余三页浅色底用深色。样式放壳层而不是
+        // 各页内部，是因为 IndexedStack 里未选中的页不参与绘制，页内
+        // AnnotatedRegion 切走后会残留上一个页的样式。
+        body: RemoteContentArea(
+          child: AnnotatedRegion<SystemUiOverlayStyle>(
+            value:
+                (lightSystemIcons
+                        ? SystemUiOverlayStyle.light
+                        : SystemUiOverlayStyle.dark)
+                    .copyWith(
+                      // 状态栏显式铺成画布色：透明状态栏在 Android 10+ 会被系统
+                      // 叠一层对比度黑纱，奶白画布会被压成灰带。短剧视频流仍透明。
+                      statusBarColor: dramaOnVideo
+                          ? Colors.transparent
+                          : palette.canvas,
+                      systemNavigationBarColor: dramaOnVideo
+                          ? Colors.black
+                          : palette.canvas,
+                      systemNavigationBarDividerColor: dramaOnVideo
+                          ? Colors.black
+                          : palette.canvas,
+                      systemNavigationBarIconBrightness: lightSystemIcons
+                          ? Brightness.light
+                          : Brightness.dark,
+                    ),
+            child: NotificationListener<UserScrollNotification>(
+              // 底栏滚动自动隐藏（对齐 PiliPlus）：把用户拖动方向递送给控制器。
+              // 弹层与上层路由不在本壳层子树、通知不会经过这里，不会被误触发。
+              onNotification: _onShellUserScroll,
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final width = constraints.maxWidth;
+                  return AnimatedBuilder(
+                    animation: _pageMotion,
+                    builder: (context, _) {
+                      final page = _currentPage();
+                      return Stack(
+                        key: const ValueKey('root-page-stack'),
+                        fit: StackFit.expand,
+                        children: [
+                          for (var i = 0; i < 4; i++)
+                            if (_visitedTabs.contains(i))
+                              KeyedSubtree(
+                                key: ValueKey('root-tab-$i'),
+                                child: Offstage(
+                                  key: ValueKey('root-tab-offstage-$i'),
+                                  // 静止时只显示当前页；预挂载帧额外显示目标页
+                                  // （Transform 放在屏外，完成 layout 但不显示）；
+                                  // 动画中显示视口范围内的页（旧页滑出 + 新页滑入）。
+                                  offstage:
+                                      !(i == _index ||
+                                          i == _premount ||
+                                          (_pageMotion.isAnimating &&
+                                              (i - page).abs() < 1)),
+                                  child: Transform.translate(
+                                    offset: Offset((i - page) * width, 0),
+                                    // RepaintBoundary 把页面内容缓存为独立图层：
+                                    // 动画期间 Transform 只移动图层（GPU 合成），
+                                    // 不触发页面内容的逐帧 repaint。
+                                    child: RepaintBoundary(
+                                      child: TickerMode(
+                                        enabled: i == _index,
+                                        child: _tabChild(i),
+                                      ),
+                                    ),
                                   ),
                                 ),
                               ),
-                            ),
-                          ),
-                    ],
+                        ],
+                      );
+                    },
                   );
                 },
-              );
-            },
+              ),
+            ),
           ),
         ),
-      ),
-      // 上游 Wenku8 GlassDock：胶囊、拖动预览和液态玻璃选中区；短剧视频流
-      // 与 OLED 纯黑下改用同色静态底板，不对每帧变化的画面做实时折射。
-      bottomNavigationBar: DockAutoHideSlide(
-        // 下滚收起 / 上滑露出（PiliPlus 同参：500ms、强调三段曲线）。
-        hide: _dockAutoHide,
-        // 墨水屏已通过 disabledProbe 完全禁用收起；此处仅保证进入 eink 时
-        // reveal 回正过渡零帧落位（与 _startPageMotion 降级约定一致）。
-        reduceMotion: einkModeNotifier.value,
-        child: ShellDock(
-          selectedIndex: _index,
-          onSelected: _selectTab,
-          overVideo: dramaOnVideo,
-          staticMaterial: shellDockStaticMaterial(overVideo: dramaOnVideo),
-          animating: _pageMotion.isAnimating,
+        // 上游 Wenku8 GlassDock：胶囊、拖动预览和液态玻璃选中区；短剧视频流
+        // 与 OLED 纯黑下改用同色静态底板，不对每帧变化的画面做实时折射。
+        bottomNavigationBar: DockAutoHideSlide(
+          // 下滚收起 / 上滑露出（PiliPlus 同参：500ms、强调三段曲线）。
+          hide: _dockAutoHide,
+          // 墨水屏已通过 disabledProbe 完全禁用收起；此处仅保证进入 eink 时
+          // reveal 回正过渡零帧落位（与 _startPageMotion 降级约定一致）。
+          reduceMotion: einkModeNotifier.value,
+          child: _remoteDock.wrap(
+            ShellDock(
+              selectedIndex: _index,
+              onSelected: _selectTab,
+              overVideo: dramaOnVideo,
+              staticMaterial: shellDockStaticMaterial(overVideo: dramaOnVideo),
+              animating: _pageMotion.isAnimating,
+            ),
+          ),
         ),
       ),
     );

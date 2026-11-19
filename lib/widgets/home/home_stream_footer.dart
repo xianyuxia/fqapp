@@ -70,7 +70,7 @@ class HomeStreamFooter extends StatelessWidget {
       case _StreamFooterState.retry:
         return Padding(
           padding: EdgeInsets.only(top: 16, bottom: 24 + safeBottom),
-          child: GestureDetector(
+          child: RemoteGestureDetector(
             onTap: onRetry,
             behavior: HitTestBehavior.opaque,
             child: ConstrainedBox(

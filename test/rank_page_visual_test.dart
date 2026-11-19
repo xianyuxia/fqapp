@@ -90,7 +90,7 @@ void main() {
     final inkWell = tester.widget<InkWell>(
       find.descendant(
         of: find.byKey(const ValueKey('rank_tab_200')),
-        matching: find.byType(InkWell),
+        matching: find.byWidgetPredicate((widget) => widget is InkWell),
       ),
     );
     expect(inkWell.canRequestFocus, isTrue);

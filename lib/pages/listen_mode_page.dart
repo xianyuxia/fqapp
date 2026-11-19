@@ -411,7 +411,7 @@ class _ListenModePageState extends State<ListenModePage>
           backgroundColor: Colors.transparent,
           foregroundColor: colors.foreground,
           elevation: 0,
-          leading: IconButton(
+          leading: RemoteBackButton(
             key: const ValueKey('listen-page-back'),
             onPressed: _exitWithResult,
             icon: const Icon(LucideIcons.arrow_left),

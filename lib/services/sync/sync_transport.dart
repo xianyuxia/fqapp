@@ -35,10 +35,14 @@ void checkSlotName(String name) {
 }
 
 class WebDavSyncTransport implements SyncTransport {
-  WebDavSyncTransport(String endpoint, String username, String password)
-    : root = Uri.parse(endpoint.endsWith('/') ? endpoint : '$endpoint/'),
-      authorization =
-          'Basic ${base64Encode(utf8.encode('$username:$password'))}' {
+  WebDavSyncTransport(
+    String endpoint,
+    String username,
+    String password, {
+    this.allowMissingRoot = false,
+  }) : root = Uri.parse(endpoint.endsWith('/') ? endpoint : '$endpoint/'),
+       authorization =
+           'Basic ${base64Encode(utf8.encode('$username:$password'))}' {
     if (!{'https', 'http'}.contains(root.scheme) ||
         root.host.isEmpty ||
         root.userInfo.isNotEmpty ||
@@ -50,6 +54,7 @@ class WebDavSyncTransport implements SyncTransport {
   }
   final Uri root;
   final String authorization;
+  final bool allowMissingRoot;
   final HttpClient client = HttpClient();
   Future<({int status, Uint8List bytes})> request(
     String method,
@@ -110,6 +115,7 @@ class WebDavSyncTransport implements SyncTransport {
         ),
       ),
     );
+    if (allowMissingRoot && r.status == 404) return [];
     if (r.status != 207) throw SyncFailure('WebDAV 列表失败（HTTP ${r.status}）');
     try {
       final xml = XmlDocument.parse(utf8.decode(r.bytes));

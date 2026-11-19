@@ -29,16 +29,19 @@ class HomeBackButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final palette = HomePalette.of(context);
-    return IconButton(
-      tooltip: tooltip,
-      onPressed: onPressed ?? () => Navigator.maybePop(context),
-      style: IconButton.styleFrom(
-        foregroundColor: color ?? palette.ink,
-        fixedSize: Size.square(size),
-        minimumSize: Size.square(size),
-        padding: EdgeInsets.zero,
+    return ExcludeFocus(
+      excluding: androidRemoteEnabled,
+      child: IconButton(
+        tooltip: tooltip,
+        onPressed: onPressed ?? () => Navigator.maybePop(context),
+        style: IconButton.styleFrom(
+          foregroundColor: color ?? palette.ink,
+          fixedSize: Size.square(size),
+          minimumSize: Size.square(size),
+          padding: EdgeInsets.zero,
+        ),
+        icon: Icon(LucideIcons.chevron_left, size: iconSize),
       ),
-      icon: Icon(LucideIcons.chevron_left, size: iconSize),
     );
   }
 }

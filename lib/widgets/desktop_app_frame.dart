@@ -125,7 +125,7 @@ class DesktopAppFrame extends StatelessWidget {
                           ),
                           const SizedBox(width: 8),
                           const Text(
-                            'fqappX',
+                            '什锦铺',
                             style: TextStyle(
                               fontWeight: FontWeight.w700,
                               fontSize: 17,

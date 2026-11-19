@@ -4,6 +4,8 @@ import 'dart:math' show cos, exp, sin, sqrt;
 import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/gestures.dart' show DragStartBehavior;
+
+import 'remote_focus.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter_lucide/flutter_lucide.dart';
@@ -508,7 +510,8 @@ class _ClassicDockDestination extends StatelessWidget {
       // 无障碍激活动作：手势在子级 GestureDetector 上，不注册语义动作时
       // TalkBack 能读出「按钮/已选择」但双击无法激活，须显式补 onTap。
       onTap: onTap,
-      child: GestureDetector(
+      child: RemoteGestureDetector(
+        ensureVisible: false,
         behavior: HitTestBehavior.opaque,
         // down：位移从按下点起算，背景跟手不丢 slop 内的起始位移。
         dragStartBehavior: DragStartBehavior.down,

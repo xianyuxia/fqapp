@@ -36,7 +36,7 @@ class CategoryDimRail extends StatelessWidget {
           itemBuilder: (context, index) {
             final selected = index == selectedIndex;
             final einkSelected = palette.eink && selected;
-            return GestureDetector(
+            return RemoteGestureDetector(
               key: ValueKey('category_dim_$index'),
               behavior: HitTestBehavior.opaque,
               onTap: () => onSelect(index),

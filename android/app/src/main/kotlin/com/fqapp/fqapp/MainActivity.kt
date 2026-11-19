@@ -38,6 +38,7 @@ class MainActivity : FlutterActivity() {
         flutterEngine.plugins.add(SecureKeyPlugin())
         flutterEngine.plugins.add(LocalBookPickerPlugin())
         flutterEngine.plugins.add(LibraryBackupPlugin())
+        flutterEngine.plugins.add(RemoteInputPlugin())
         flutterEngine.plugins.add(SyncStoragePlugin())
         flutterEngine.plugins.add(CloudLoginPlugin())
         flutterEngine.plugins.add(CloudStoragePlugin())

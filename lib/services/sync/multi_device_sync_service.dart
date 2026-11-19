@@ -69,8 +69,17 @@ class SyncProvider {
 class MultiDeviceSyncService extends ChangeNotifier
     with WidgetsBindingObserver
     implements SyncSettingsStore, WebDavSyncSettings {
-  MultiDeviceSyncService._();
-  static final instance = MultiDeviceSyncService._();
+  MultiDeviceSyncService._(this._connectWebDav);
+  static final instance = MultiDeviceSyncService._(
+    UpstreamWebDavExchange.connect,
+  );
+
+  @visibleForTesting
+  factory MultiDeviceSyncService.forTest(
+    UpstreamWebDavExchange Function(WebDavConfig) connectWebDav,
+  ) => MultiDeviceSyncService._(connectWebDav);
+
+  final UpstreamWebDavExchange Function(WebDavConfig) _connectWebDav;
 
   static const _secrets = FlutterSecureStorage();
   Box<dynamic>? _box;
@@ -133,6 +142,8 @@ class MultiDeviceSyncService extends ChangeNotifier
   Future<void> _queue = Future.value();
   Future<void>? _running;
   Timer? _timer;
+  @visibleForTesting
+  bool get hasScheduledSync => _timer?.isActive ?? false;
   Timer? _webDavPoll;
   DateTime? _lastAttempt;
   DateTime? _rateLimitedUntil;
@@ -658,7 +669,7 @@ class MultiDeviceSyncService extends ChangeNotifier
     late final ({SyncDocument document, LibraryBackup? remote, String revision})
     preview;
     try {
-      final upstream = UpstreamWebDavExchange.connect(_upstreamConfig(config));
+      final upstream = _connectWebDav(_upstreamConfig(config));
       try {
         preview = await upstream.preview(
           document,
@@ -822,9 +833,7 @@ class MultiDeviceSyncService extends ChangeNotifier
     try {
       await _serial(_capture);
       if (_config['provider'] == 'webdav') {
-        final upstream = UpstreamWebDavExchange.connect(
-          _upstreamConfig(_config),
-        );
+        final upstream = _connectWebDav(_upstreamConfig(_config));
         _activeUpstream = upstream;
         final published = await _serial(() async => _document.copy());
         final merged = await upstream.sync(

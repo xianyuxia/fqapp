@@ -21,7 +21,7 @@
     <!-- Device identity and reading data stay on-device; see
          .agents/notes/implemented/bug-fix/2026-09-18-home-geometry-and-backup.md -->
     <application
-        android:label="fqappX"
+        android:label="什锦铺"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
@@ -51,7 +51,7 @@
             android:taskAffinity=""
             android:theme="@style/LaunchTheme"
             android:resizeableActivity="true"
-            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:configChanges="orientation|keyboardHidden|keyboard|navigation|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"
             android:windowSoftInputMode="adjustResize">
             <!-- Specifies an Android theme to apply to this Activity as soon as

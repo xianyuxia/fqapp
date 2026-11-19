@@ -16,26 +16,67 @@ import 'sync_transport.dart';
 /// The public file keeps the upstream wire format. The private file is a
 /// conditional-write journal for the version information upstream cannot keep.
 class UpstreamWebDavExchange {
-  UpstreamWebDavExchange(this.publicFile, this.journal);
+  UpstreamWebDavExchange(
+    this.publicFile,
+    this.journal, {
+    this._legacyTransport,
+  });
 
-  factory UpstreamWebDavExchange.connect(WebDavConfig config) =>
-      UpstreamWebDavExchange(
-        WebDavClient(config),
-        WebDavClient(config, forSyncMetadata: true),
-      );
+  factory UpstreamWebDavExchange.connect(WebDavConfig config) {
+    final directory = config.fileUri.resolve('.');
+    return UpstreamWebDavExchange(
+      WebDavClient(config),
+      WebDavClient(config, forSyncMetadata: true),
+      legacyTransport: WebDavSyncTransport(
+        '$directory',
+        config.username,
+        config.password,
+        allowMissingRoot: true,
+      ),
+    );
+  }
 
   final WebDavClient publicFile;
   final WebDavClient journal;
+  final SyncTransport? _legacyTransport;
   static const _externalActor = '00000000000000000000000000000000';
 
   Future<({SyncDocument document, LibraryBackup? remote, String revision})>
   preview(SyncDocument local, {bool requireJournal = false}) async {
     final state = await _read(requireJournal: requireJournal);
+    final legacy = await _readLegacy(state);
+    final merged = _merge(state, local.copy()..merge(legacy));
+    final remote = legacy.records.isEmpty
+        ? state.publicDocument?.backup
+        : WebDavSyncDocument.decode(
+            _project(_merge(state, legacy), state.publicDocument),
+          ).backup;
     return (
-      document: _merge(state, local),
-      remote: state.publicDocument?.backup,
-      revision: syncJson([state.publicFile.etag, state.journal.etag]),
+      document: merged,
+      remote: remote,
+      revision: syncJson([
+        state.publicFile.etag,
+        state.journal.etag,
+        legacy.toJson(),
+      ]),
     );
+  }
+
+  Future<SyncDocument> _readLegacy(_RemoteState state) async {
+    final document = SyncDocument();
+    final transport = _legacyTransport;
+    if (state.legacyImported ||
+        state.pending?.legacyImported == true ||
+        transport == null) {
+      return document;
+    }
+    // Migration reads the original slots once per folder. Leaving them alone
+    // also preserves an independent copy if the first compatible write fails.
+    final slots = await SyncExchange(transport).readAll(prepare: false);
+    for (final slot in slots.values) {
+      document.merge(slot.document);
+    }
+    return document;
   }
 
   Future<SyncDocument> sync(
@@ -56,8 +97,13 @@ class UpstreamWebDavExchange {
             pending.baseHash,
             pending.publicBytes,
             pending.document,
+            legacyImported: pending.legacyImported,
           );
-          final reservation = _encode(state.committed, adopted);
+          final reservation = _encode(
+            state.committed,
+            adopted,
+            legacyImported: state.legacyImported,
+          );
           if (!await journal.write(reservation, journalEtag)) continue;
           final saved = await journal.read();
           if (_hash(saved.bytes) != _hash(reservation)) continue;
@@ -69,7 +115,11 @@ class UpstreamWebDavExchange {
           if (!written) continue;
         }
         if (!await journal.write(
-          _encode(pending.document, null),
+          _encode(
+            pending.document,
+            null,
+            legacyImported: pending.legacyImported,
+          ),
           journalEtag,
         )) {
           continue;
@@ -79,20 +129,35 @@ class UpstreamWebDavExchange {
         continue;
       }
 
-      final merged = _merge(state, local);
+      final legacy = await _readLegacy(state);
+      final merged = _merge(state, local.copy()..merge(legacy));
       final projection = _project(merged, state.publicDocument);
       WebDavSyncDocument.decode(projection);
       final current = state.publicFile.bytes;
       if (_sameProjection(projection, current)) {
-        if (syncJson(merged.toJson()) != syncJson(state.committed?.toJson()) &&
-            !await journal.write(_encode(merged, null), state.journal.etag)) {
+        if ((!state.legacyImported ||
+                syncJson(merged.toJson()) !=
+                    syncJson(state.committed?.toJson())) &&
+            !await journal.write(
+              _encode(merged, null, legacyImported: true),
+              state.journal.etag,
+            )) {
           continue;
         }
         return merged;
       }
 
-      final proposal = _Proposal(_hash(current), projection, merged);
-      final reservation = _encode(state.committed, proposal);
+      final proposal = _Proposal(
+        _hash(current),
+        projection,
+        merged,
+        legacyImported: true,
+      );
+      final reservation = _encode(
+        state.committed,
+        proposal,
+        legacyImported: state.legacyImported,
+      );
       if (!await journal.write(reservation, state.journal.etag)) {
         continue;
       }
@@ -105,10 +170,16 @@ class UpstreamWebDavExchange {
         if (_hash(observed.bytes) == proposal.targetHash) continue;
         // A definite precondition failure leaves the old public revision
         // untouched by this writer. Remove only our exact journal proposal.
-        await journal.write(_encode(state.committed, null), saved.etag);
+        await journal.write(
+          _encode(state.committed, null, legacyImported: state.legacyImported),
+          saved.etag,
+        );
         continue;
       }
-      if (await journal.write(_encode(merged, null), saved.etag)) {
+      if (await journal.write(
+        _encode(merged, null, legacyImported: true),
+        saved.etag,
+      )) {
         return merged;
       }
     }
@@ -129,6 +200,7 @@ class UpstreamWebDavExchange {
         : WebDavSyncDocument.decode(file.bytes!);
     SyncDocument? committed;
     _Proposal? pending;
+    var legacyImported = false;
     if (metadata.bytes case final bytes?) {
       final raw = jsonDecode(utf8.decode(bytes));
       if (raw is! Map<String, dynamic> ||
@@ -141,13 +213,21 @@ class UpstreamWebDavExchange {
       } else if (raw['committed'] != null) {
         throw const FormatException('WebDAV 合并日志损坏');
       }
+      legacyImported = raw['legacyImported'] == true;
       if (raw['pending'] case final Map<String, dynamic> candidate) {
         pending = _Proposal.fromJson(candidate);
       } else if (raw['pending'] != null) {
         throw const FormatException('WebDAV 待提交记录损坏');
       }
     }
-    return _RemoteState(file, metadata, document, committed, pending);
+    return _RemoteState(
+      file,
+      metadata,
+      document,
+      committed,
+      pending,
+      legacyImported,
+    );
   }
 
   SyncDocument _merge(_RemoteState state, SyncDocument local) {
@@ -275,21 +355,26 @@ class UpstreamWebDavExchange {
   static String? _hash(Uint8List? bytes) =>
       bytes == null ? null : sha256.convert(bytes).toString();
 
-  static Uint8List _encode(SyncDocument? committed, _Proposal? pending) =>
-      Uint8List.fromList(
-        utf8.encode(
-          syncJson({
-            'format': 'fqapp.webdav-state',
-            'version': 1,
-            'committed': committed?.toJson(),
-            if (pending != null) 'pending': pending.toJson(),
-          }),
-        ),
-      );
+  static Uint8List _encode(
+    SyncDocument? committed,
+    _Proposal? pending, {
+    required bool legacyImported,
+  }) => Uint8List.fromList(
+    utf8.encode(
+      syncJson({
+        'format': 'fqapp.webdav-state',
+        'version': 1,
+        'committed': committed?.toJson(),
+        'legacyImported': legacyImported,
+        if (pending != null) 'pending': pending.toJson(),
+      }),
+    ),
+  );
 
   void close() {
     publicFile.close();
     journal.close();
+    _legacyTransport?.close();
   }
 }
 
@@ -300,22 +385,30 @@ class _RemoteState {
     this.publicDocument,
     this.committed,
     this.pending,
+    this.legacyImported,
   );
 
   final WebDavRemote publicFile, journal;
   final WebDavSyncDocument? publicDocument;
   final SyncDocument? committed;
   final _Proposal? pending;
+  final bool legacyImported;
 }
 
 class _Proposal {
-  _Proposal(this.baseHash, this.publicBytes, this.document, {String? writer})
-    : writer =
-          writer ??
-          '${DateTime.now().microsecondsSinceEpoch}-${Random.secure().nextInt(1 << 30)}';
+  _Proposal(
+    this.baseHash,
+    this.publicBytes,
+    this.document, {
+    String? writer,
+    required this.legacyImported,
+  }) : writer =
+           writer ??
+           '${DateTime.now().microsecondsSinceEpoch}-${Random.secure().nextInt(1 << 30)}';
 
   final String? baseHash;
   final String writer;
+  final bool legacyImported;
   final Uint8List publicBytes;
   final SyncDocument document;
   String get targetHash => sha256.convert(publicBytes).toString();
@@ -335,12 +428,14 @@ class _Proposal {
       bytes,
       document,
       writer: json['writer'] as String,
+      legacyImported: json['legacyImported'] == true,
     );
   }
 
   Map<String, Object?> toJson() => {
     'base': baseHash,
     'writer': writer,
+    'legacyImported': legacyImported,
     'projection': utf8.decode(publicBytes),
     'document': document.toJson(),
   };

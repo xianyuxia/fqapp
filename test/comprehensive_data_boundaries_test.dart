@@ -83,9 +83,12 @@ void main() {
           channel,
           (_) async => directory.path,
         );
+        const cloudChannel = MethodChannel('fqapp/cloud_storage');
+        messenger.setMockMethodCallHandler(cloudChannel, (_) async => null);
         addTearDown(() async {
           await tester.pumpWidget(const SizedBox.shrink());
           messenger.setMockMethodCallHandler(channel, null);
+          messenger.setMockMethodCallHandler(cloudChannel, null);
           themeModeNotifier.value = ThemeMode.system;
           await tester.runAsync(() async {
             await Hive.close();

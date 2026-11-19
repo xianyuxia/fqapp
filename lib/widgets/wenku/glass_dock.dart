@@ -4,6 +4,7 @@ import 'package:cupertino_ui/cupertino_ui.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/physics.dart';
 
+import '../remote_focus.dart';
 import 'src/app_text.dart';
 import 'src/dock_layout.dart';
 import 'src/performance_preferences.dart';
@@ -546,42 +547,52 @@ class _GlassDockState extends State<GlassDock> with TickerProviderStateMixin {
         selected: widget.selectedIndex == index,
         label: item.semanticLabel ?? item.label,
         onTap: item.enabled && index >= 0 ? () => _commit(index) : null,
-        child: ExcludeSemantics(
-          child: SizedBox(
-            height: 48,
-            child: Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (compact)
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        icon,
-                        const SizedBox(width: 5),
-                        Flexible(
-                          child: FittedBox(fit: BoxFit.scaleDown, child: label),
-                        ),
-                      ],
-                    )
-                  else ...[
-                    icon,
+        child: RemoteFocus(
+          canRequestFocus: item.enabled && index >= 0,
+          ensureVisible: false,
+          onActivate: () {
+            if (item.enabled && index >= 0) _commit(index);
+          },
+          child: ExcludeSemantics(
+            child: SizedBox(
+              height: 48,
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (compact)
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          icon,
+                          const SizedBox(width: 5),
+                          Flexible(
+                            child: FittedBox(
+                              fit: BoxFit.scaleDown,
+                              child: label,
+                            ),
+                          ),
+                        ],
+                      )
+                    else ...[
+                      icon,
+                      const SizedBox(height: 3),
+                      Flexible(
+                        child: FittedBox(fit: BoxFit.scaleDown, child: label),
+                      ),
+                    ],
                     const SizedBox(height: 3),
-                    Flexible(
-                      child: FittedBox(fit: BoxFit.scaleDown, child: label),
-                    ),
-                  ],
-                  const SizedBox(height: 3),
-                  ExcludeSemantics(
-                    child: SizedBox(
-                      width: 12,
-                      height: 1.5,
-                      child: ColoredBox(
-                        color: scheme.onSurface.withValues(alpha: proximity),
+                    ExcludeSemantics(
+                      child: SizedBox(
+                        width: 12,
+                        height: 1.5,
+                        child: ColoredBox(
+                          color: scheme.onSurface.withValues(alpha: proximity),
+                        ),
                       ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),

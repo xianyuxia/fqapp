@@ -1,5 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 
+import '../remote_focus.dart';
+
 import '../../services/episode_source_cache.dart';
 import '../../services/playback_format.dart';
 import '../../services/player_preferences.dart';
@@ -141,7 +143,8 @@ class PlayletOptionSheet<T> extends StatelessWidget {
             itemBuilder: (context, index) {
               final option = options[index];
               final selected = isSelected(option.value);
-              return InkWell(
+              return RemoteInkWell(
+                autofocus: androidRemoteEnabled && selected,
                 key: ValueKey('$sheetKey-$index'),
                 onTap: () => Navigator.pop(context, option.value),
                 child: SizedBox(
