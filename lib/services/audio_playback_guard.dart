@@ -217,7 +217,11 @@ void _onChapterFinished(
     unawaited(c._pause(player, generation));
     return;
   }
-  if (shouldAdvance && c._index + 1 < c._chapters.length) {
+  // Keep the old sleep-timer boundary when the next chapter can start at once.
+  final remaining = c._sleepRemaining;
+  final sleepDueSoon =
+      remaining != null && remaining <= const Duration(seconds: 3);
+  if (shouldAdvance && !sleepDueSoon && c._index + 1 < c._chapters.length) {
     unawaited(c._openChapter(c._index + 1));
     return;
   }
