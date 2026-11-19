@@ -7,37 +7,23 @@ import io.flutter.embedding.engine.FlutterShellArgs
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
-    private var cloudActionsChannel: MethodChannel? = null
-
-    // Debug automation can request an official login or a synthetic validation;
-    // it cannot provide credentials, select arbitrary folders, or read records.
-    private fun pendingCloudAction(): Map<String, String>? {
-        if ((applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) == 0) return null
-        val action = intent?.getStringExtra("fqappx_cloud_action") ?: return null
-        val provider = intent?.getStringExtra("fqappx_cloud_provider") ?: return null
-        intent.removeExtra("fqappx_cloud_action")
-        intent.removeExtra("fqappx_cloud_provider")
-        if (action !in listOf("login", "validate") || provider !in listOf("quark", "tianyi", "mobile139", "ali", "weiyun", "onedrive")) return null
-        return mapOf("action" to action, "provider" to provider)
-    }
-
-    override fun onNewIntent(intent: android.content.Intent) {
-        super.onNewIntent(intent)
-        setIntent(intent)
-        cloudActionsChannel?.invokeMethod("action", pendingCloudAction())
-    }
     // 音量键翻页桥。Dart 侧在阅读页且开启“音量键翻页”时通过 setEnabled(true)
     // 通知原生拦截音量键，原生 dispatchKeyEvent 吃掉按键（系统音量不再变化）并通过
     // volumeKey 回调让 Dart 翻页。该方案在原生层拦截，不受 Flutter 生命周期
     // 过渡事件漏发导致的 HardwareKeyboard 派发丢失影响。
     private var volumeKeyEnabled = false
     private var volumeChannel: MethodChannel? = null
+    private var hapticsChannel: MethodChannel? = null
 
-    override fun getFlutterShellArgs(): FlutterShellArgs = super.getFlutterShellArgs().also {
-        // Runs before the engine/FlutterLoader starts; configureFlutterEngine is
-        // too late to select the process-wide rendering backend.
-        RendererCompatibility.configure(it)
-    }
+    /** Read by the AI foreground-service bridge; a FGS may only start while this is true. */
+    internal var isResumed = false
+
+    override fun getFlutterShellArgs(): FlutterShellArgs =
+        super.getFlutterShellArgs().also {
+            // Runs before the engine/FlutterLoader starts; configureFlutterEngine is
+            // too late to select the process-wide rendering backend.
+            RendererCompatibility.configure(it)
+        }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -45,17 +31,16 @@ class MainActivity : FlutterActivity() {
         // Native ExoPlayer host for DRM short dramas (CENC streaming decrypt).
         flutterEngine.plugins.add(NativePlayerPlugin())
         flutterEngine.plugins.add(ReaderDevicePlugin())
+        // 全屏播放用 WindowInsetsController 隐藏系统栏；immersiveSticky 在
+        // target SDK 36 的 edge-to-edge 下已不生效（issue #176）。
+        flutterEngine.plugins.add(PlayerSystemUiPlugin())
         flutterEngine.plugins.add(SystemTtsPlugin())
+        flutterEngine.plugins.add(SecureKeyPlugin())
         flutterEngine.plugins.add(LocalBookPickerPlugin())
         flutterEngine.plugins.add(LibraryBackupPlugin())
         flutterEngine.plugins.add(SyncStoragePlugin())
         flutterEngine.plugins.add(CloudLoginPlugin())
         flutterEngine.plugins.add(CloudStoragePlugin())
-        cloudActionsChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "fqapp/cloud_actions").also { channel ->
-            channel.setMethodCallHandler { call, result ->
-                if (call.method == "pending") result.success(pendingCloudAction()) else result.notImplemented()
-            }
-        }
         flutterEngine.plugins.add(FanqieAccountPlugin())
         // 官方系统分享是 Intent.ACTION_SEND；没有可分享的应用时回 false。
         flutterEngine.plugins.add(SharePlugin())
@@ -65,23 +50,63 @@ class MainActivity : FlutterActivity() {
         flutterEngine.plugins.add(EinkRefreshPlugin())
         // 小米澎湃 OS 公平运行内存：收 TRIM/KILL 广播，转发 Dart 处理后回系统。
         flutterEngine.plugins.add(FairMemoryPlugin())
+        flutterEngine.plugins.add(AiRequestPlugin())
+
+        hapticsChannel =
+            MethodChannel(
+                flutterEngine.dartExecutor.binaryMessenger,
+                "fqapp/haptics",
+            ).also { channel ->
+                channel.setMethodCallHandler { call, result ->
+                    if (call.method != "setEnabled") {
+                        result.notImplemented()
+                    } else if (call.arguments !is Boolean) {
+                        result.error("BAD_ARGUMENT", "Expected a boolean", null)
+                    } else {
+                        // Flutter's platform haptics target this view, including
+                        // Material long presses that bypass our Dart cue helper.
+                        window.decorView.isHapticFeedbackEnabled = call.arguments as Boolean
+                        result.success(true)
+                    }
+                }
+            }
 
         // 音量键翻页通道：Dart -> 原生 setEnabled 控制是否拦截；原生 -> Dart
         // volumeKey 回调翻页方向（+1 下一页 / -1 上一页）。
-        volumeChannel = MethodChannel(
-            flutterEngine.dartExecutor.binaryMessenger,
-            "fqapp/volume-key",
-        ).also { ch ->
-            ch.setMethodCallHandler { call, result ->
-                when (call.method) {
-                    "setEnabled" -> {
-                        volumeKeyEnabled = call.arguments as? Boolean ?: false
-                        result.success(null)
+        volumeChannel =
+            MethodChannel(
+                flutterEngine.dartExecutor.binaryMessenger,
+                "fqapp/volume-key",
+            ).also { ch ->
+                ch.setMethodCallHandler { call, result ->
+                    when (call.method) {
+                        "setEnabled" -> {
+                            volumeKeyEnabled = call.arguments as? Boolean ?: false
+                            result.success(null)
+                        }
+
+                        else -> {
+                            result.notImplemented()
+                        }
                     }
-                    else -> result.notImplemented()
                 }
             }
-        }
+    }
+
+    override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        hapticsChannel?.setMethodCallHandler(null)
+        hapticsChannel = null
+        super.cleanUpFlutterEngine(flutterEngine)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        isResumed = true
+    }
+
+    override fun onPause() {
+        isResumed = false
+        super.onPause()
     }
 
     override fun dispatchKeyEvent(event: KeyEvent?): Boolean {

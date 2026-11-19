@@ -9,12 +9,20 @@
 # packages, and plugins designed to encourage good coding practices.
 include: package:flutter_lints/flutter.yaml
 
+formatter:
+  page_width: 80
+  trailing_commas: automate
+
 analyzer:
   # Generated output and local diagnostic copies are not application sources.
   exclude:
     - build/**
     - third_party/**
     - .tools/**
+    - android/**
+    - ios/**
+    - linux/**
+    - windows/**
 
 linter:
   # The lint rules applied to this project can be customized in the

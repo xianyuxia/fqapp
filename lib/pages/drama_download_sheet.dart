@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../models/media_item.dart';
 import '../services/drama_cache_preferences.dart';
@@ -9,6 +9,7 @@ import '../widgets/drama_group_picker.dart';
 import '../services/drama_download_store.dart';
 import '../services/drama_downloader.dart';
 import '../services/connectivity_status.dart';
+import '../widgets/home/home_chip.dart';
 import '../widgets/home/home_design.dart';
 import 'cached_dramas_page.dart';
 
@@ -213,7 +214,7 @@ class _DramaDownloadSheetState extends State<DramaDownloadSheet> {
       );
       if (proceed != true) return;
     }
-    final height = DramaCachePreferences.instance.downloadHeight.value;
+    final qualityHeight = DramaCachePreferences.instance.downloadHeight.value;
     await _downloader.enqueue(
       drama: CachedDrama(
         id: widget.seriesId,
@@ -223,7 +224,7 @@ class _DramaDownloadSheetState extends State<DramaDownloadSheet> {
       ),
       episodes: selected,
       // 0 = 最高档，交给引擎在每集实际给到的档位里挑。
-      maxHeight: height == 0 ? null : height,
+      maxHeight: qualityHeight == 0 ? null : qualityHeight,
     );
     if (mounted) setState(_selected.clear);
   }
@@ -404,10 +405,11 @@ class _DramaDownloadSheetState extends State<DramaDownloadSheet> {
           for (final count in counts)
             Padding(
               padding: const EdgeInsets.only(right: 8),
-              child: ActionChip(
+              child: HomeChip(
                 key: ValueKey('download-ahead-$count'),
-                label: Text(count == remaining ? '剩余 $count 集' : '往后 $count 集'),
-                onPressed: () => unawaited(_cacheAhead(count)),
+                label: count == remaining ? '剩余 $count 集' : '往后 $count 集',
+                selected: false,
+                onTap: () => unawaited(_cacheAhead(count)),
               ),
             ),
         ],
@@ -415,7 +417,7 @@ class _DramaDownloadSheetState extends State<DramaDownloadSheet> {
     );
   }
 
-  /// 下载画质：每集实际可选档位由取流接口决定，所以这里给的是「上限」。
+  /// 下载画质：短边质量上限；每集实际档位由取流接口决定。
   ///
   /// 以前下载器写死取最高档，用户既看不到也选不了 —— 一集 1080P 动辄
   /// 五六十 MB，想省空间的人毫无办法。
@@ -424,13 +426,14 @@ class _DramaDownloadSheetState extends State<DramaDownloadSheet> {
     final current = prefs.downloadHeight.value;
     // 横向可滚：窄屏（360dp）上四个 chip 加标签放不下一行。
     // 真实档位优先：同一高度只留一项（上游偶尔给两条同高度不同码率的流），
-    // 按高度从高到低排；0 永远排最前，表示「最高」。
+    // 按短边质量从高到低排；0 永远排最前，表示「最高」。
     final actual = <int, String>{};
     for (final variant in widget.qualities) {
-      if (variant.height <= 0) continue;
+      final quality = variant.qualityHeight;
+      if (quality <= 0) continue;
       actual.putIfAbsent(
-        variant.height,
-        () => variant.name.isEmpty ? '${variant.height}P' : variant.name,
+        quality,
+        () => variant.name.isEmpty ? '${quality}P' : variant.name,
       );
     }
     final options = actual.isEmpty
@@ -473,11 +476,11 @@ class _DramaDownloadSheetState extends State<DramaDownloadSheet> {
           for (final option in options)
             Padding(
               padding: const EdgeInsets.only(right: 8),
-              child: ChoiceChip(
+              child: HomeChip(
                 key: ValueKey('download-quality-${option.height}'),
-                label: Text(option.label),
+                label: option.label,
                 selected: effective == option.height,
-                onSelected: (_) async {
+                onTap: () async {
                   await prefs.setDownloadHeight(option.height);
                   if (mounted) setState(() {});
                 },
@@ -520,11 +523,11 @@ class _DramaDownloadSheetState extends State<DramaDownloadSheet> {
             for (final count in const [3, 5, 10])
               Padding(
                 padding: const EdgeInsets.only(left: 4),
-                child: ChoiceChip(
+                child: HomeChip(
                   key: ValueKey('download-auto-ahead-$count'),
-                  label: Text('$count'),
+                  label: '$count',
                   selected: prefs.ahead.value == count,
-                  onSelected: (_) async {
+                  onTap: () async {
                     await prefs.setAhead(count);
                     if (mounted) setState(() {});
                   },
@@ -612,7 +615,7 @@ class _DramaDownloadSheetState extends State<DramaDownloadSheet> {
     final selected = _selected.contains(itemId);
     return _cellContainer(
       key: ValueKey('download-cell-$itemId'),
-      label: '第 $number 集',
+      label: episode.hasKnownIndex ? '第 $number 集' : '当前视频',
       foreground: selected ? const Color(0xFFFA6725) : palette.ink,
       background: selected ? const Color(0x14FA6725) : idleBackground,
       border: selected ? const Color(0xFFFA6725) : Colors.transparent,

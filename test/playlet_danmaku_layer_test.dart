@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:fqapp/models/playlet_comment.dart';
@@ -101,6 +101,7 @@ void main() {
       bool enabled = true,
       bool tickerMode = true,
       double rate = 1,
+      double topInset = 0,
     }) => Directionality(
       textDirection: TextDirection.ltr,
       child: Center(
@@ -116,6 +117,7 @@ void main() {
               rate: rate,
               playing: playing,
               enabled: enabled,
+              topInset: topInset,
             ),
           ),
         ),
@@ -421,6 +423,30 @@ void main() {
       },
     );
 
+    testWidgets('topInset starts the first lane below the feed chrome', (
+      tester,
+    ) async {
+      final position = ValueNotifier<Duration>(
+        const Duration(milliseconds: 1000),
+      );
+      addTearDown(position.dispose);
+      await tester.pumpWidget(
+        layer(
+          position: position,
+          entries: [danmaku('top-inset', 500)],
+          topInset: 92,
+        ),
+      );
+      final viewport = tester.getRect(
+        find.byKey(const ValueKey('danmaku-viewport')),
+      );
+      final bubble = tester.getRect(
+        find.byKey(const ValueKey('danmaku-top-inset')),
+      );
+      // 容器 inset 92dp + 弹幕层自己的 8dp 首轨偏移。
+      expect(bubble.top - viewport.top, closeTo(100, .5));
+    });
+
     testWidgets('renders the entries that are inside the window', (
       tester,
     ) async {
@@ -510,6 +536,40 @@ void main() {
       await tester.pump();
       expect(plate(), isNull);
       expect(find.text('前方高能'), findsOneWidget);
+    });
+
+    testWidgets('renders bracket emoji tokens as images inside a bubble', (
+      tester,
+    ) async {
+      final position = ValueNotifier<Duration>(Duration.zero);
+      addTearDown(position.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Center(
+            child: SizedBox(
+              width: 400,
+              height: 300,
+              child: PlayletDanmakuLayer(
+                entries: [danmaku('emoji', 0, '冲[赞]')],
+                position: position,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final emoji = tester
+          .widgetList<Image>(find.byType(Image))
+          .where(
+            (image) =>
+                (image.image as AssetImage).assetName ==
+                'assets/images/emoji/emoji_32.webp',
+          );
+      expect(emoji, isNotEmpty);
+      expect(find.textContaining('[赞]'), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
     });
   });
 }

@@ -1,7 +1,15 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../../services/app_theme.dart';
 import '../../services/reader_preferences.dart';
+
+/// 阅读页右下角两颗动作钮（看 / 听）的直径。
+///
+/// 取听书胶囊里那圈圆形封面的尺寸（`AudioFloatingPlayer._width/_height`
+/// 里的 42dp），两颗钮原先照官方资源按 56dp 摆，比胶囊里的图书封面大出
+/// 三分之一，压在正文上也显得重。缩到 42 后与胶囊同高，两处并排时视线
+/// 不再被按钮抢走；「看」展开成提示条时的宽高也按这个比例一起缩。
+const double kReaderActionSize = 42;
 
 extension ReaderThemeColors on ReaderThemePreset {
   bool get isDark => this == ReaderThemePreset.dark;
@@ -21,6 +29,7 @@ extension ReaderThemeColors on ReaderThemePreset {
     ReaderThemePreset.parchment => '纸张',
     ReaderThemePreset.dark => '夜间',
     ReaderThemePreset.eink => '墨水屏',
+    ReaderThemePreset.mistBlue => '雾蓝',
   };
 
   Color get backgroundColor => switch (this) {
@@ -29,6 +38,7 @@ extension ReaderThemeColors on ReaderThemePreset {
     ReaderThemePreset.parchment => const Color(0xFFF3E4C2),
     ReaderThemePreset.dark => isOled ? Colors.black : const Color(0xFF171717),
     ReaderThemePreset.eink => Colors.white,
+    ReaderThemePreset.mistBlue => const Color(0xFFD8E4F0),
   };
 
   Color get textColor => switch (this) {
@@ -37,9 +47,11 @@ extension ReaderThemeColors on ReaderThemePreset {
     ReaderThemePreset.parchment => const Color(0xFF493D2B),
     ReaderThemePreset.dark => const Color(0xFFD2D2D2),
     ReaderThemePreset.eink => Colors.black,
+    ReaderThemePreset.mistBlue => const Color(0xFF243447),
   };
 
   Color get accentColor => switch (this) {
+    ReaderThemePreset.mistBlue => const Color(0xFF3D668C),
     ReaderThemePreset.eyeCare => const Color(0xFF4F6F52),
     ReaderThemePreset.dark => const Color(0xFFE9AD82),
     ReaderThemePreset.eink => Colors.black,
@@ -57,6 +69,7 @@ extension ReaderThemeColors on ReaderThemePreset {
   /// 的 b4e-b4i 资源表):light #FA6725、parchment(纸) #CC8114、eyeCare(绿)
   /// #65992E;官方另有蓝色主题 #3D85CC,我们暂无对应预设。夜间走同一橙。
   Color get selectionAccentColor => switch (this) {
+    ReaderThemePreset.mistBlue => const Color(0xFF3D85CC),
     ReaderThemePreset.parchment => const Color(0xFFCC8114),
     ReaderThemePreset.eyeCare => const Color(0xFF65992E),
     ReaderThemePreset.eink => Colors.black,
@@ -66,8 +79,7 @@ extension ReaderThemeColors on ReaderThemePreset {
   /// The wash behind a text selection. 官方 markingConfig.b()(ReaderViewLayout
   /// 的 ie5.a 实现)= un4.j.C(theme, 0.16f) —— 强调色 @ 16%,C 会整体重设
   /// alpha,所以夜间也是 16% 橙。
-  Color get selectionWashColor =>
-      selectionAccentColor.withValues(alpha: 0.16);
+  Color get selectionWashColor => selectionAccentColor.withValues(alpha: 0.16);
 
   /// 控点实色(un4.j.t):夜间降到 60% 的橙,其余主题用强调色原色。
   Color get selectionHandleColor =>
@@ -77,11 +89,23 @@ extension ReaderThemeColors on ReaderThemePreset {
   /// 不是正文色;夜间自带 60% alpha。
   Color get selectionUnderlineColor => selectionHandleColor;
 
-  /// 朗读句高亮底色：与选区强调色区分开的暖黄，墨水屏用淡黑灰以免
-  /// 盖住正文。
+  /// 朗读句高亮底色（默认值）：取**当前背景加深**，而不是固定暖黄。
+  ///
+  /// 浅色纸面用正文色压 10% 混进背景，得到同色系里深一档的底；夜间主题的
+  /// 正文色是浅色，混出来自然是「提亮」，白字仍读得清。墨水屏保留淡黑灰，
+  /// 避免彩色底把残影放大。
+  ///
+  /// 用户可在「设置 → 听书 → 高亮颜色」里覆盖（见
+  /// [ReaderPreferences.narrationHighlightColor]）。
   Color get narrationHighlightColor => isEink
       ? Colors.black.withValues(alpha: 0.10)
-      : const Color(0xFFFFC107).withValues(alpha: 0.28);
+      : Color.alphaBlend(textColor.withValues(alpha: 0.10), backgroundColor);
+
+  /// Dialogue uses a quiet theme accent, separate from the playback color.
+  Color get dialogueHighlightColor => Color.alphaBlend(
+    accentColor.withValues(alpha: isDark ? 0.18 : 0.12),
+    backgroundColor,
+  );
 
   Color get panelColor {
     if (isEink) return Colors.white;
@@ -107,6 +131,7 @@ extension ReaderThemeColors on ReaderThemePreset {
     if (isOled) return const Color(0xFF2E2E34);
     return textColor.withValues(alpha: 0.09);
   }
+
   /// 排版面板表面 = 阅读页背景本身(官方 bottombar/t.java 直接把面板根
   /// View 设为 readerConfig.getBackgroundColor(),面板与页面同色);chip/
   /// 控件底色另走 fieldColor(官方是白色 5% 叠加,x4 色表)。
@@ -179,14 +204,14 @@ extension ReaderThemeColors on ReaderThemePreset {
             surfaceContainerLow: isOled ? const Color(0xFF0C0C0E) : null,
             surfaceContainer: isOled ? const Color(0xFF121215) : null,
             surfaceContainerHigh: isOled ? const Color(0xFF17171A) : null,
-            surfaceContainerHighest: isOled
-                ? const Color(0xFF1F1F23)
-                : null,
+            surfaceContainerHighest: isOled ? const Color(0xFF1F1F23) : null,
             outlineVariant: isOled ? const Color(0xFF2E2E34) : null,
           );
     return base.copyWith(
       colorScheme: scheme,
       scaffoldBackgroundColor: backgroundColor,
+      // Chip 的半透明选中色绘在默认 Material 画布上，底色也须跟随阅读预设。
+      canvasColor: backgroundColor,
       textTheme: base.textTheme.apply(
         bodyColor: textColor,
         displayColor: textColor,
@@ -211,6 +236,46 @@ extension ReaderThemeColors on ReaderThemePreset {
         prefixIconColor: mutedTextColor,
         suffixIconColor: mutedTextColor,
       ),
+      // 阅读明暗独立于软件主题，chip 子主题中的具体色值也须跟随阅读预设。
+      chipTheme: base.chipTheme.copyWith(
+        backgroundColor: fieldColor,
+        // ChoiceChip（笔记筛选 / 搜索排序）选中背景读 secondarySelectedColor，
+        // FilterChip 选中读 selectedColor，两个字段都要覆盖。
+        selectedColor: accentColor.withValues(alpha: 0.12),
+        secondarySelectedColor: accentColor.withValues(alpha: 0.12),
+        labelStyle: (base.chipTheme.labelStyle ?? const TextStyle()).copyWith(
+          color: textColor,
+        ),
+      ),
+      // 与 chipTheme 同一类泄漏：base 的 dialog / card / popup 子主题在构造时
+      // 就按软件明暗解析好了具体色值，copyWith 只换 colorScheme 不会重算它们，
+      // 深色软件 + 浅色阅读时弹出的对话框标题 / 卡片 / 菜单仍会漏出深色。这里
+      // 一并补全，让阅读弹层配色自成一套。SnackBar 反过来保持跟随软件（深色
+      // 吐司在白底阅读上才看得见），故意不覆盖。
+      dialogTheme: base.dialogTheme.copyWith(
+        backgroundColor: sheetColor,
+        surfaceTintColor: Colors.transparent,
+        titleTextStyle: (base.dialogTheme.titleTextStyle ?? const TextStyle())
+            .copyWith(color: textColor),
+        contentTextStyle:
+            (base.dialogTheme.contentTextStyle ?? const TextStyle()).copyWith(
+              color: mutedTextColor,
+            ),
+      ),
+      cardTheme: base.cardTheme.copyWith(
+        color: panelColor,
+        surfaceTintColor: Colors.transparent,
+      ),
+      popupMenuTheme: base.popupMenuTheme.copyWith(
+        color: panelColor,
+        surfaceTintColor: Colors.transparent,
+      ),
+      // Divider 优先读 dividerTheme.color，只设 dividerColor 会被它盖住。
+      dividerTheme: DividerThemeData(
+        color: borderColor,
+        thickness: 0.6,
+        space: 1,
+      ),
       dividerColor: borderColor,
       sliderTheme: base.sliderTheme.copyWith(
         activeTrackColor: accentColor,
@@ -225,5 +290,23 @@ extension ReaderThemeColors on ReaderThemePreset {
         dragHandleColor: mutedTextColor.withValues(alpha: 0.3),
       ),
     );
+  }
+}
+
+extension ReaderPreferencesThemeColors on ReaderPreferences {
+  Color get effectiveBackgroundColor =>
+      customBackgroundColor == null || themePreset.isEink || themePreset.isOled
+      ? themePreset.backgroundColor
+      : Color(customBackgroundColor!);
+
+  Color get effectiveTextColor {
+    if (customBackgroundColor == null ||
+        themePreset.isEink ||
+        themePreset.isOled) {
+      return themePreset.textColor;
+    }
+    return effectiveBackgroundColor.computeLuminance() > 0.179
+        ? Colors.black
+        : Colors.white;
   }
 }

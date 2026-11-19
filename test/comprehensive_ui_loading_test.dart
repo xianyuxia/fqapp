@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fqapp/models/media_item.dart';
@@ -20,7 +20,7 @@ void main() {
       (chapters: 3, resume: 2),
     ]) {
       testWidgets('${scenario.chapters} chapters, resume ${scenario.resume}: '
-          'one tap caches the rest of the catalogue', (tester) async {
+          '整本下载 caches the entire catalogue', (tester) async {
         addTearDown(() => tester.pumpWidget(const SizedBox.shrink()));
         final chapters = <Chapter>[
           for (var index = 0; index < scenario.chapters; index++)
@@ -64,13 +64,15 @@ void main() {
           ),
         );
         await tester.pumpAndSettle();
-        await tester.tap(find.text('下载'));
+        await tester.tap(find.byKey(const Key('detail_action_下载')));
         await tester.pumpAndSettle();
-        // The detail page downloads: no sheet, no range to choose.
+        // 改版后「下载」先开弹层，整本下载在弹层里；没有范围要选。
+        expect(find.byKey(const Key('detail_download_sheet')), findsOneWidget);
         expect(find.byType(ChapterCacheSheet), findsNothing);
-        final start = scenario.resume ?? 0;
+        await tester.tap(find.byKey(const Key('detail_download_all')));
+        await tester.pumpAndSettle();
         expect(await cache.cachedChapterIds('book'), {
-          for (var index = start; index < scenario.chapters; index++)
+          for (var index = 0; index < scenario.chapters; index++)
             'chapter-$index',
         });
         expect(find.textContaining('缓存完成'), findsOneWidget);

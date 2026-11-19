@@ -4,19 +4,21 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart' show kTouchSlop;
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:lottie/lottie.dart';
 
 import '../models/audio_extra.dart';
 import '../models/media_item.dart';
 import '../services/episode_source_cache.dart';
+import '../services/haptic_preferences.dart';
 import '../services/native_player.dart';
 import '../services/playback_format.dart';
 import '../services/playback_gesture_levels.dart';
 import '../services/player_layout_preferences.dart';
 import '../services/player_preferences.dart';
 import '../services/player_style_config.dart';
+import '../services/player_system_ui.dart';
 import '../services/short_series_font_scale.dart';
 import '../models/playlet_comment.dart';
 import 'home/home_design.dart';
@@ -40,6 +42,7 @@ import 'player/player_toast.dart';
 import 'player/player_video_layout.dart';
 import 'player/story_seek_bar.dart';
 
+part 'video_player_landscape_seek.dart';
 part 'video_player_keyboard.dart';
 
 // Note: 移除短剧互动入口的范围见
@@ -139,7 +142,7 @@ class VideoPlayerChrome extends StatefulWidget {
   final bool newPlayerBottomStyle;
   final bool hasBanner;
 
-  /// 旧底栏（`jj3/i` + `bom.xml`）里「清屏」（Lottie + 文案）与「还原」两项
+  /// 旧底栏（`jj3/i` + `bom.xml`）里「清屏」（图标 + 文案）与「还原」两项
   /// 只在 `NsUtilsDepend.isPadDevice() && PadFitPhaseTwo.newBottomStyle` 时
   /// 可见（`jj3/i.java:620-637`）。手机上的旧底栏只有「清晰度 / 倍速」，
   /// 没有清屏入口——不能凭 `PlayerBottomStyleConfig` 一个开关推断出来。
@@ -421,8 +424,27 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
   /// 丢弃旧轴的比例，否则视频区会缩成一条。
   bool? _splitRatioSideBySide;
 
-  /// 下半区/右侧栏是否折叠成纯看视频。退出分屏时复位，比例本身保留。
-  bool _splitCollapsed = false;
+  bool? _sidePanelCollapsed;
+  bool _bottomPanelCollapsed = false;
+  final _splitPanelKey = GlobalKey();
+  Size? _splitPanelSize;
+  bool _splitPanelSideBySide = false;
+
+  // Wide sources keep their picture area until the user opens the details.
+  // Explicit choices survive fullscreen and temporary narrow windows.
+  bool get _splitCollapsed => _windowLandscape
+      ? _sidePanelCollapsed ??
+            (widget.layoutMode == PlayerLayoutMode.auto &&
+                (_lastSourceWide ?? true))
+      : _bottomPanelCollapsed;
+
+  set _splitCollapsed(bool value) {
+    if (_windowLandscape) {
+      _sidePanelCollapsed = value;
+    } else {
+      _bottomPanelCollapsed = value;
+    }
+  }
 
   /// 清屏独立于控件自动收起，暂停、切集与旋转均保留本次会话的选择。
   /// Note: 新底栏文字/图标两分支与手势取舍 — 见
@@ -559,6 +581,14 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
   String get _seriesTitle =>
       widget.title.isEmpty ? _episodeTitle : widget.title;
 
+  String get _episodeNumberLabel =>
+      widget.episodes.isNotEmpty &&
+          widget.episodes[widget.currentIndex].hasKnownIndex
+      ? '第${widget.currentIndex + 1}集'
+      : '当前视频';
+
+  bool get _completeCatalogue => hasCompleteEpisodeCatalogue(widget.episodes);
+
   /// 官方 `wp3/o1.java:301-347` 的 `isSupportShowLandIcon`：
   /// `saasVideoData != null && !saasVideoData.isVertical()`。竖屏剧集
   /// （`vertical == true`）整颗「全屏观看」不渲染；`vertical` 未知时保持
@@ -645,6 +675,10 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
   @override
   void didUpdateWidget(VideoPlayerChrome oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.layoutMode != widget.layoutMode) {
+      _sidePanelCollapsed = null;
+      _bottomPanelCollapsed = false;
+    }
     if (oldWidget.player != widget.player) {
       _listenToPosition();
       // 换播放器等于换 holder：官方 `d.release()` 会摘掉锁监听，本地等价是
@@ -797,7 +831,9 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
       // 记账会在回到前台时把用户的手动暂停误恢复。移动端的暂停都经会话
       // 中介，现读结果与旧记账一致。
       final resumePlayer = widget.player;
+      final floating = resumePlayer?.isFloating ?? false;
       _resumeOnForeground =
+          !floating &&
           _ready &&
           ((resumePlayer?.playing ?? false) ||
               ((resumePlayer?.playWhenReady ?? false) &&
@@ -807,11 +843,18 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
       _endBoost();
       _doubleTapGuard?.cancel();
       _hideTimer?.cancel();
-      unawaited(_control((player) => player.pause()));
+      if (!floating) unawaited(_control((player) => player.pause()));
     } else if (active && !_appActive) {
       _appActive = true;
       if (_resumeOnForeground) unawaited(_control((player) => player.play()));
       _resumeOnForeground = false;
+      // 回到前台时系统可能已把系统栏放回来；全屏仍在就重新隐藏（#176）。
+      if (_fullScreen && !_routeCovered) {
+        _queueSystemUi(() async {
+          if (!mounted || !_fullScreen || _routeCovered) return;
+          await PlayerSystemUi.hide();
+        });
+      }
       _scheduleHide();
     }
   }
@@ -1187,7 +1230,9 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
       return;
     }
     _hideTimer?.cancel();
-    HapticFeedback.lightImpact();
+    if (HapticPreferences.instance.value) {
+      HapticFeedback.lightImpact();
+    }
     setState(() => _boosting = true);
     unawaited(_control((player) => player.setRate(2)));
   }
@@ -2168,7 +2213,10 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
       if (fullScreen) {
         _portraitPinned = false;
         _portraitPinSuspended = false;
-        await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+        // Android 15+ ignores Flutter's legacy immersiveSticky under
+        // edge-to-edge (target SDK 36); the Android host hides the bars with
+        // WindowInsetsController instead (#176).
+        await PlayerSystemUi.hide();
         // 全屏方向跟片源走：竖版片源铺满竖屏（点「全屏」不该把 9:16 的画面
         // 转成横屏、留一圈黑边），横版片源沿用官方 `ShortSeriesLandActivity`
         // 的 `userLandscape`。尺寸未知（连播切集的新播放器）时不发请求，
@@ -2239,7 +2287,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
             ? const [DeviceOrientation.portraitUp]
             : const <DeviceOrientation>[],
       );
-      await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+      await PlayerSystemUi.show();
     } catch (_) {}
   }
 
@@ -2254,16 +2302,31 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
     if (covered == _routeCovered) return;
     _routeCovered = covered;
     if (covered) {
-      if (!_portraitPinned) return;
-      _portraitPinned = false;
-      _portraitPinSuspended = true;
-    } else {
-      if (!_portraitPinSuspended) return;
+      // 新路由盖住播放页：把系统栏还给上层页面。全屏时不走
+      // `_restoreSystemUi`，否则被 push 的详情页会跟着转屏。
+      if (_portraitPinned) {
+        _portraitPinned = false;
+        _portraitPinSuspended = true;
+        _queueSystemUi(() => _restoreSystemUi());
+      } else if (_fullScreen) {
+        _queueSystemUi(() => PlayerSystemUi.show());
+      }
+      return;
+    }
+    if (_portraitPinSuspended) {
       _portraitPinSuspended = false;
       _portraitPinned = true;
+      _queueSystemUi(() => _restoreSystemUi());
+    } else if (_fullScreen) {
+      // 回到全屏播放页：重新沉浸（#176）。
+      _queueSystemUi(() => PlayerSystemUi.hide());
     }
-    final operation = _systemUiUpdates.then((_) => _restoreSystemUi());
-    _systemUiUpdates = operation.catchError((Object _) {});
+  }
+
+  /// 串行执行系统 UI 变更，后一次不会抢在前一次前面落地。
+  void _queueSystemUi(Future<void> Function() operation) {
+    final queued = _systemUiUpdates.then((_) => operation());
+    _systemUiUpdates = queued.catchError((Object _) {});
   }
 
   @override
@@ -2327,7 +2390,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
               }
               // 分屏（短剧）：视频盒与下半区 / 右侧栏共用同一份 chrome 状态。
               // 全屏时永远回到沉浸式整屏（官方「全屏观看」是独立横屏 Activity）。
-              final split = _shouldUseSplit(window);
+              final split = _shouldUseSplit(window, insets);
               _syncSplitState(split);
               if (split) {
                 return _buildSplit(
@@ -2337,12 +2400,30 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
                   outerScaler: outerScaler,
                 );
               }
-              return _buildStage(
-                context,
-                window: window,
-                insets: insets,
-                compact: false,
-                outerScaler: outerScaler,
+              return Stack(
+                fit: StackFit.expand,
+                children: [
+                  _buildStage(
+                    context,
+                    window: window,
+                    insets: insets,
+                    compact: false,
+                    outerScaler: outerScaler,
+                  ),
+                  if (widget.splitPanel != null && _splitPanelSize != null)
+                    Positioned(
+                      right: 0,
+                      bottom: 0,
+                      width: _splitPanelSize!.width,
+                      height: _splitPanelSize!.height,
+                      child: _retainedSplitPanel(
+                        context,
+                        sideBySide: _splitPanelSideBySide,
+                        hidden: true,
+                        outerScaler: outerScaler,
+                      ),
+                    ),
+                ],
               );
             },
           ),
@@ -2385,7 +2466,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
       fit: VideoFit.contain,
       panelFraction: compact ? 0 : _panelFraction,
       restingPanelFraction: compact ? 0 : _panelRestFraction,
-      fullScreen: _fullScreen,
+      fullScreen: _fullScreen || landscape,
       compact: compact,
     );
     final durationMs = math.max(0, widget.duration.inMilliseconds);
@@ -3060,20 +3141,29 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
   ///
   /// 只有宿主传了 [VideoPlayerChrome.splitPanel]（短剧播放页）才可能分屏；
   /// 全屏态永远回到整屏——官方「全屏观看」是独立的横屏 Activity，没有下半区。
-  /// `auto` 只处理「竖屏设备 + 横屏片源」：设备本身横置时屏幕已经是宽的，
-  /// 再拆左右只会让画面更小，因此保持整屏。
-  bool _shouldUseSplit(Size window) {
+  /// Auto uses available pane space, not device identity. Narrow portrait
+  /// windows retain the existing stacked layout for wide sources.
+  bool _shouldUseSplit(Size window, EdgeInsets insets) {
     if (widget.splitPanel == null || !widget.shortSeries || _fullScreen) {
       return false;
     }
-    if (_sourceKnown) _lastSourceWide = _videoSize.width > _videoSize.height;
+    if (_sourceKnown) {
+      _lastSourceWide = _videoSize.width > _videoSize.height;
+    } else if (widget.currentEpisodeVertical case final vertical?) {
+      _lastSourceWide = !vertical;
+    }
     switch (widget.layoutMode) {
       case PlayerLayoutMode.immersive:
         return false;
       case PlayerLayoutMode.split:
         return true;
       case PlayerLayoutMode.auto:
-        if (window.width >= window.height) return false;
+        if (window.width >= window.height) {
+          return PlayerVideoLayout.canAutoSplitSideways(
+            window: window,
+            insets: insets,
+          );
+        }
         // 尺寸未知沿用上次判定：按固定方向猜会让竖版剧每集先闪一次分屏。
         return _lastSourceWide ?? false;
     }
@@ -3102,7 +3192,6 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
         _gestureBase = null;
         _gestureHud.value = null;
         if (_splitHintVisible) setState(() => _splitHintVisible = false);
-        if (_splitCollapsed) setState(() => _splitCollapsed = false);
       });
     }
     if (!split || !_panelOpen) return;
@@ -3122,6 +3211,31 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
     });
   }
 
+  Widget _retainedSplitPanel(
+    BuildContext context, {
+    required bool sideBySide,
+    required bool hidden,
+    required TextScaler outerScaler,
+  }) => Offstage(
+    offstage: hidden,
+    child: ExcludeFocus(
+      excluding: hidden,
+      child: TickerMode(
+        enabled: !hidden,
+        child: MediaQuery(
+          data: MediaQuery.of(context).copyWith(textScaler: outerScaler),
+          child: KeyedSubtree(
+            key: _splitPanelKey,
+            child: SplitPanelAxis(
+              sideBySide: sideBySide,
+              child: widget.splitPanel!,
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+
   /// 分屏：竖屏上下（视频盒 + 下半区），横屏左右（左视频 + 右侧栏）。
   ///
   /// 外层 SafeArea 一次性吃掉状态栏/导航栏/刘海，视频盒与面板都不再各自
@@ -3134,6 +3248,10 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
   }) {
     final palette = HomePalette.of(context);
     final sideBySide = window.width > window.height;
+    final roomySideBySide = PlayerVideoLayout.canAutoSplitSideways(
+      window: window,
+      insets: insets,
+    );
     final availableWidth = math.max(0.0, window.width - insets.horizontal);
     final availableHeight = math.max(
       0.0,
@@ -3141,7 +3259,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
     );
     // 分隔条厚度：竖屏占高度、横屏占宽度。ratio 把分隔条也算在视频区里，
     // 拖动时只和整段可用长度相除，不会因为分隔条厚度反复漂移。
-    const dividerExtent = 18.0;
+    const dividerExtent = PlayerVideoLayout.splitDividerExtent;
     final defaultRatio = sideBySide
         ? (PlayerVideoLayout.splitLeftWidth(window: window, insets: insets) +
                   dividerExtent) /
@@ -3157,7 +3275,6 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
     if (panel == null) return const SizedBox.shrink();
     // 面板的「上下 / 左右」形制由这里决定：它只是窗口里裁出的一条窄边，
     // 拿它自己的宽高比反推会判反（横屏右侧栏 324×420，比高还窄）。
-    final axisPanel = SplitPanelAxis(sideBySide: sideBySide, child: panel);
     // 分隔条不随比例重建：拖拽长度只跟可用尺寸有关。
     final divider = _splitDivider(
       vertical: !sideBySide,
@@ -3202,8 +3319,8 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
               child: MediaQuery(
                 // 面板是普通页面文字：还原外层字号档，不跟短剧 UI 一起放大。
                 data: MediaQuery.of(context).copyWith(textScaler: outerScaler),
-                // 拖动分隔条只重排这一层：视频盒按新尺寸重建，面板与分隔条
-                // 复用同一个实例，不会重跑内部 build。
+                // Dragging only relayouts the split; the keyed panel keeps its
+                // tab, scroll controllers and in-flight requests.
                 child: ValueListenableBuilder<double?>(
                   valueListenable: _splitRatio,
                   builder: (context, dragged, _) {
@@ -3212,25 +3329,44 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
                     final draggedRatio = _splitRatioSideBySide == sideBySide
                         ? dragged
                         : null;
-                    final ratio = _splitCollapsed
-                        ? 1.0
+                    final ratio = roomySideBySide
+                        ? PlayerVideoLayout.clampSideSplitRatio(
+                            draggedRatio ?? defaultRatio,
+                            availableWidth,
+                          )
                         : (draggedRatio ?? defaultRatio).clamp(.25, .85);
-                    final videoWidth = sideBySide
-                        ? (_splitCollapsed
-                              ? availableWidth
-                              : math.max(
-                                  120.0,
-                                  availableWidth * ratio - dividerExtent,
-                                ))
+                    final openVideoWidth = sideBySide
+                        ? math.max(0.0, availableWidth * ratio - dividerExtent)
                         : availableWidth;
-                    final videoHeight = sideBySide
+                    final openVideoHeight = sideBySide
                         ? availableHeight
-                        : (_splitCollapsed
-                              ? availableHeight
-                              : math.max(
-                                  96.0,
-                                  availableHeight * ratio - dividerExtent,
-                                ));
+                        : math.min(
+                            math.max(0.0, availableHeight - dividerExtent),
+                            math.max(
+                              96.0,
+                              availableHeight * ratio - dividerExtent,
+                            ),
+                          );
+                    final panelWidth = sideBySide
+                        ? math.max(
+                            0.0,
+                            availableWidth - openVideoWidth - dividerExtent,
+                          )
+                        : availableWidth;
+                    final panelHeight = sideBySide
+                        ? availableHeight
+                        : math.max(
+                            0.0,
+                            availableHeight - openVideoHeight - dividerExtent,
+                          );
+                    _splitPanelSize = Size(panelWidth, panelHeight);
+                    _splitPanelSideBySide = sideBySide;
+                    final videoWidth = _splitCollapsed
+                        ? availableWidth
+                        : openVideoWidth;
+                    final videoHeight = _splitCollapsed
+                        ? availableHeight
+                        : openVideoHeight;
                     // 视频盒单独成层：弹幕 / 控件动画只重绘上半区，不带着
                     // 下半区选集列表一起重绘。
                     final stage = RepaintBoundary(
@@ -3260,26 +3396,36 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
                           ),
                       ],
                     );
-                    // stretch：左右分栏时右侧面板要撑满高度，上下分栏时下半区
-                    // 要撑满宽度；否则面板若没有内在尺寸会缩成 0。
-                    return sideBySide
-                        ? Row(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: [
-                              stageLayer,
-                              // 分隔条可拖比例、点击收起；收起后隐藏面板。
-                              if (!_splitCollapsed) divider,
-                              if (!_splitCollapsed) Expanded(child: axisPanel),
-                            ],
-                          )
-                        : Column(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: [
-                              stageLayer,
-                              if (!_splitCollapsed) divider,
-                              if (!_splitCollapsed) Expanded(child: axisPanel),
-                            ],
-                          );
+                    // Stable children retain the detail tab and scroll position
+                    // across collapse and axis changes, without zero-size layout.
+                    return Stack(
+                      children: [
+                        Positioned(left: 0, top: 0, child: stageLayer),
+                        if (!_splitCollapsed)
+                          Positioned(
+                            left: sideBySide ? openVideoWidth : 0,
+                            top: sideBySide ? 0 : openVideoHeight,
+                            width: sideBySide ? dividerExtent : availableWidth,
+                            height: sideBySide
+                                ? availableHeight
+                                : dividerExtent,
+                            child: divider,
+                          ),
+                        Positioned(
+                          key: const ValueKey('player-split-panel-slot'),
+                          right: 0,
+                          bottom: 0,
+                          width: panelWidth,
+                          height: panelHeight,
+                          child: _retainedSplitPanel(
+                            context,
+                            sideBySide: sideBySide,
+                            hidden: _splitCollapsed,
+                            outerScaler: outerScaler,
+                          ),
+                        ),
+                      ],
+                    );
                   },
                 ),
               ),
@@ -3302,7 +3448,18 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
     final current =
         (_splitRatioSideBySide == sideBySide ? _splitRatio.value : null) ??
         fallback;
-    final next = (current + delta / extent).clamp(.25, .85);
+    final roomySideBySide =
+        sideBySide &&
+        PlayerVideoLayout.canAutoSplitSideways(
+          window: _viewportSize,
+          insets: MediaQuery.paddingOf(context),
+        );
+    final next = roomySideBySide
+        ? PlayerVideoLayout.clampSideSplitRatio(
+            current + delta / extent,
+            extent,
+          )
+        : (current + delta / extent).clamp(.25, .85);
     if ((next - current).abs() < .001) return;
     _splitRatioSideBySide = sideBySide;
     _splitRatio.value = next;
@@ -3351,8 +3508,12 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
               ? SystemMouseCursors.resizeRow
               : SystemMouseCursors.resizeColumn,
           child: SizedBox(
-            height: vertical ? 18 : double.infinity,
-            width: vertical ? double.infinity : 18,
+            height: vertical
+                ? PlayerVideoLayout.splitDividerExtent
+                : double.infinity,
+            width: vertical
+                ? double.infinity
+                : PlayerVideoLayout.splitDividerExtent,
             child: Center(child: handle),
           ),
         ),
@@ -3590,19 +3751,18 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
         window: window,
         insets: insets,
         videoSize: _videoSize,
-        // 官方「画面撑满」只换铺排方式，不动解码与进度；但宽屏全屏时
-        // `cq3/o.d()` 强制 ASPECT_FIT，撑满不再生效——竖版片源在横屏里居中、
-        // 两侧留黑边（`PlayerVideoLayout.fitFor`）。
+        // 横屏窗口与主动全屏使用同一画面规则；横置进入时也不能沿用
+        // 竖屏的裁切和信息区留白。这里只改变几何，不改变返回/转屏状态。
         // 分屏视频盒同理：盒子里只求完整显示，撑满会裁掉字幕。
         fit: compact
             ? VideoFit.contain
             : PlayerVideoLayout.fitFor(
                 fillScreen: widget.fillScreen,
-                fullScreen: _fullScreen,
+                fullScreen: _fullScreen || _windowLandscape,
               ),
         panelFraction: compact ? 0 : fraction,
         restingPanelFraction: compact ? 0 : _panelRestFraction,
-        fullScreen: _fullScreen,
+        fullScreen: _fullScreen || _windowLandscape,
         compact: compact,
       );
       // Retain the video/cover subtree while only its rectangle follows the
@@ -3673,7 +3833,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
                   : Text(
                       // 官方播放页顶栏标题就是「第1集」这样的集数（截图），
                       // 剧名在底部信息层。
-                      '第${widget.currentIndex + 1}集',
+                      _episodeNumberLabel,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
@@ -3700,7 +3860,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
     final total = widget.episodes.length;
     final status = widget.seriesStatus;
     final meta = [
-      if (total > 1) '全$total集',
+      if (_completeCatalogue && total > 1) '全$total集',
       if (status != null && status.isNotEmpty) status,
     ].join(' · ');
     return Column(
@@ -3708,7 +3868,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          '$_seriesTitle｜第${widget.currentIndex + 1}集',
+          '$_seriesTitle｜$_episodeNumberLabel',
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: const TextStyle(
@@ -3900,14 +4060,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
                     width: 20,
                     height: 20,
                   )
-                : SizedBox(
-                    width: 28,
-                    height: 28,
-                    child: Lottie.asset(
-                      'assets/lottie/immersive_mode_on_v2.json',
-                      animate: false,
-                    ),
-                  ),
+                : const PlayletClearScreenIcon(),
             () => _setClearScreen(!_clearScreen),
           ),
         // 清屏态压掉了顶栏 ⋮：旧底栏同样补一个「设置」出口（与新栏同形）。
@@ -4160,7 +4313,9 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
                 ),
                 Expanded(
                   child: Text(
-                    widget.seriesStatus == null
+                    !_completeCatalogue
+                        ? ' · 完整目录暂不可用'
+                        : widget.seriesStatus == null
                         ? ' · 全${widget.episodes.length}集'
                         : ' · ${widget.seriesStatus} · 全${widget.episodes.length}集',
                     maxLines: 1,
@@ -4303,6 +4458,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
   /// B站 形态重排，入口与语义一一对应，不新增数据源；官方那一行的评论
   /// 计数、弹幕输入框仍不显示（无发送接口，见诚实清单）。
   Widget _landscapeBar(EdgeInsets insets) => Positioned(
+    key: const ValueKey('landscape-controls-layer'),
     left: 0,
     right: 0,
     bottom: 0,
@@ -4379,20 +4535,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
           ),
           const SizedBox(height: 2),
           // StorySeekBar 自带 30dp 命中高度：进度线本身压在中间。
-          StorySeekBar(
-            key: const ValueKey('landscape-seek'),
-            value: _progressValue,
-            enabled: widget.duration > Duration.zero,
-            seeking: _seeking,
-            onStart: _startSeek,
-            onChanged: (value) => _seekValue.value = value,
-            onEnd: (value) => unawaited(_finishSeek(value)),
-            onCancel: _cancelSeek,
-            trackWidth: 3,
-            thumbRadius: 6,
-            progressColor: const Color(0xFFFA6725),
-            trackColor: const Color(0x47FFFFFF),
-          ),
+          _landscapeSeekBar(),
           const SizedBox(height: 4),
           SizedBox(
             height: 40,

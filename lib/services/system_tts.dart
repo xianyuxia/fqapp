@@ -1,4 +1,6 @@
 import 'platform_channel.dart';
+import 'desktop_platform.dart';
+import 'linux_platform.dart';
 import 'dart:async';
 
 import 'package:flutter/services.dart';
@@ -29,9 +31,13 @@ class SystemTts {
   static const _events = AppEventChannel('fqapp/system_tts_events');
   static final events = _events.receiveBroadcastStream();
 
-  static Future<T?> _call<T>(String method, [Object? arguments]) => _channel
-      .invokeMethod<T>(method, arguments)
-      .timeout(const Duration(seconds: 20));
+  static Future<T?> _call<T>(String method, [Object? arguments]) {
+    final pending = _channel.invokeMethod<T>(method, arguments);
+    // Linux worker owns the operation until acknowledgement, including close.
+    return isLinuxDesktop
+        ? pending
+        : pending.timeout(const Duration(seconds: 20));
+  }
 
   static Future<({List<SystemTtsEngine> engines, String? defaultEngine})>
   engines() async {
@@ -50,14 +56,19 @@ class SystemTts {
       await _call<int>('initialize', {
         'engine': prefs.engine,
         'rate': prefs.rate,
+        if (isLinuxDesktop && prefs.volume != null) 'volume': prefs.safeVolume,
       }) ??
       4000;
+
   /// Speaks [text] as utterance [id]. [queue] appends it behind the utterance
   /// already playing instead of cutting it off, which is what lets one sentence
   /// follow the previous one without a gap.
   static Future<void> speak(String text, String id, {bool queue = false}) =>
       _call<void>('speak', {'text': text, 'id': id, 'queue': queue});
+  static Future<void> setVolume(double value) =>
+      _call<void>('setVolume', {'volume': value});
   static Future<void> stop() => _call<void>('stop');
+
   /// Stops the engine but **keeps** the audio focus: a pause must not abandon
   /// the focus, or the system never sends the GAIN that follows a call, and
   /// `focus_resume` can never bring the narration back.
@@ -75,15 +86,24 @@ class SystemTts {
 }
 
 class SystemTtsPreferences {
-  const SystemTtsPreferences({this.engine, this.rate = 1});
+  const SystemTtsPreferences({this.engine, this.rate = 1, this.volume});
   final String? engine;
   final double rate;
+
+  /// 0..1 maps to libspeechd -100..100; null preserves the daemon default.
+  final double? volume;
+  double get safeVolume => volume?.isFinite == true ? volume!.clamp(0, 1) : 1;
 
   static Future<SystemTtsPreferences> load() async {
     final sp = await SharedPreferences.getInstance();
     final rate = sp.getDouble('system_tts_rate') ?? 1;
     return SystemTtsPreferences(
       engine: sp.getString('system_tts_engine'),
+      volume: sp.containsKey('system_tts_volume')
+          ? SystemTtsPreferences(
+              volume: sp.getDouble('system_tts_volume'),
+            ).safeVolume
+          : null,
       rate: rate.isFinite ? rate.clamp(0.5, 3) : 1,
     );
   }
@@ -96,6 +116,7 @@ class SystemTtsPreferences {
       await sp.setString('system_tts_engine', engine!);
     }
     await sp.setDouble('system_tts_rate', rate);
+    if (volume != null) await sp.setDouble('system_tts_volume', safeVolume);
   }
 }
 
@@ -115,6 +136,7 @@ class SystemTtsBook {
     this.cache,
     TextReplacementSnapshot? replacementSnapshot,
     TextReplacementStore? replacementStore,
+    this.displayResolver,
   }) : replacementStore = replacementStore ?? TextReplacementStore.instance,
        replacementSnapshot =
            replacementSnapshot ??
@@ -139,12 +161,23 @@ class SystemTtsBook {
   final TextReplacementSnapshot replacementSnapshot;
   final TextReplacementStore replacementStore;
 
+  /// Optional final-display resolver shared with the reader. When present it
+  /// must return a result whose `source` is [content] (the immutable original)
+  /// and whose `content` is the AI/custom display text.
+  final Future<TextReplacementResult> Function(
+    ChapterContent content,
+    int index,
+  )?
+  displayResolver;
+
   Future<TextReplacementResult> loadDisplay(
     int index, {
     BackendRequest? request,
     TextReplacementCancellation? cancellation,
   }) async {
     final content = await load(index, request: request);
+    final resolver = displayResolver;
+    if (resolver != null) return resolver(content, index);
     return TextReplacementEngine.instance.transform(
       source: content,
       chapterTitle: chapters[index].title,
@@ -208,6 +241,8 @@ class SystemTtsPlayback extends ChangeNotifier with WidgetsBindingObserver {
   // focus_resume 就自动续播。用户手动暂停会清掉它，电话里自己停下的
   // 不会被误恢复。
   bool _resumeOnFocusGain = false;
+  int? _visibilityResumeGeneration;
+  Future<void> _visibilityPause = Future<void>.value();
   // 焦点已交还（收到 focus_resume），但当时 app 还在后台、不允许出声：
   // 记下来等回到前台再补。否则 resume() 的 _allowed 闸会把它直接吞掉。
   bool _pendingFocusResume = false;
@@ -249,6 +284,7 @@ class SystemTtsPlayback extends ChangeNotifier with WidgetsBindingObserver {
   StreamSubscription<dynamic>? _subscription;
   Future<void> _notificationQueue = Future<void>.value();
   Future<void> _pumps = Future<void>.value();
+  Future<void> _engineQueue = Future<void>.value();
   Future<void>? _closeFuture;
   BackendRequest? _loadRequest;
   TextReplacementCancellation? _replacementCancellation;
@@ -257,7 +293,10 @@ class SystemTtsPlayback extends ChangeNotifier with WidgetsBindingObserver {
   double get progress =>
       _text.isEmpty ? 0 : (_offset / _text.length).clamp(0, 1);
   bool get _allowed =>
-      _appActive || AudioPreferences.instance.backgroundPlayback.value;
+      !(isLinuxDesktop && DesktopSystemSession.instance.suspended) &&
+      (_appActive || AudioPreferences.instance.backgroundPlayback.value);
+
+  final String _mediaOwner = NativePlayer.allocateRemoteOwner();
 
   void start() {
     if (_started || closed) return;
@@ -270,10 +309,13 @@ class SystemTtsPlayback extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     WidgetsBinding.instance.addObserver(this);
+    if (isLinuxDesktop) {
+      DesktopSystemSession.instance.addListener(_systemSessionChanged);
+    }
     book.replacementStore.changes.addListener(_replacementChanged);
     _appActive =
         WidgetsBinding.instance.lifecycleState == null ||
-        WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
+        desktopInactiveStillVisible(WidgetsBinding.instance.lifecycleState!);
     AudioPreferences.instance.backgroundPlayback.addListener(
       _preferencesChanged,
     );
@@ -284,9 +326,25 @@ class SystemTtsPlayback extends ChangeNotifier with WidgetsBindingObserver {
       },
     );
     NativePlayer.setRemoteCommandHandler(
+      owner: _mediaOwner,
+      onSetting: (property, value) async {
+        if (closed) throw StateError('Closed TTS');
+        await SystemTts._call<void>(
+          property == 'Volume' ? 'setVolume' : 'setRate',
+          {property == 'Volume' ? 'volume' : 'rate': value},
+        );
+        if (closed) throw StateError('Closed TTS');
+        final settings = await SystemTts._call<Map>('getPlaybackSettings');
+        return (settings![property == 'Volume' ? 'volume' : 'rate'] as num)
+            .toDouble();
+      },
       onAction: (action) {
         if (closed) return;
         switch (action) {
+          case 'play':
+            unawaited(resume());
+          case 'pause':
+            unawaited(pause());
           case 'playPause':
             unawaited(toggle());
           case 'prev':
@@ -323,7 +381,7 @@ class SystemTtsPlayback extends ChangeNotifier with WidgetsBindingObserver {
     _offset = offset;
     _publish();
     try {
-      await SystemTts.stop();
+      await _engineCall<void>(() => SystemTts.stop());
       if (closed || token != _generation) return;
       final content = await book
           .loadDisplay(next, request: request, cancellation: cancellation)
@@ -362,6 +420,11 @@ class SystemTtsPlayback extends ChangeNotifier with WidgetsBindingObserver {
       loading = true;
       _publish();
       final prefs = await SystemTtsPreferences.load();
+      if (!_current(token)) return;
+      // A pending pause/stop must land before a new engine starts, but the
+      // initialization itself stays cancellable: pause() must not wait for a
+      // slow engine handshake before it can invalidate this generation.
+      await _engineQueue;
       if (!_current(token)) return;
       _maxLength = (await SystemTts.initialize(prefs)).clamp(2, 300);
       if (!_current(token)) return;
@@ -418,13 +481,23 @@ class SystemTtsPlayback extends ChangeNotifier with WidgetsBindingObserver {
         await _notificationQueue;
         if (!_current(token) || !_queued.containsKey(id)) return;
       }
-      await SystemTts.speak(
-        _text.substring(range.start, range.end),
-        id,
-        queue: !flush,
+      await _engineCall<void>(
+        () => SystemTts.speak(
+          _text.substring(range.start, range.end),
+          id,
+          queue: !flush,
+        ),
       );
       if (!_current(token)) return;
     }
+  }
+
+  /// Speak/pause/stop calls share one queue so a late pause/stop can never land
+  /// after the next resume's speak and silence it.
+  Future<T> _engineCall<T>(Future<T> Function() call) {
+    final next = _engineQueue.then((_) => call());
+    _engineQueue = next.then<void>((_) {}).catchError((Object _) {});
+    return next;
   }
 
   /// Serializes [_pump]. Two overlapping runs would append a sentence behind
@@ -468,9 +541,18 @@ class SystemTtsPlayback extends ChangeNotifier with WidgetsBindingObserver {
   void _event(dynamic value) {
     if (closed || value is! Map) return;
     if (value['type'] == 'interrupted') {
-      // 焦点被临时抢走（来电、导航提示）：停朗读但**不弃焦点**，等系统
-      // 交还焦点时的 focus_resume 自动续播。带不带 id 都一样处理。
-      unawaited(_pauseForInterruption());
+      // 旧事件没有 keepFocus 字段，按临时打断处理以兼容既有调用方。
+      if (value['keepFocus'] == false) {
+        unawaited(_stopForFocusLoss());
+      } else {
+        // 焦点被临时抢走（来电、导航提示）：停朗读但**不弃焦点**，等系统
+        // 交还焦点时的 focus_resume 自动续播。带不带 id 都一样处理。
+        unawaited(_pauseForInterruption());
+      }
+      return;
+    }
+    if (value['type'] == 'engine_stopped') {
+      unawaited(_fail(StateError('朗读引擎已停止，请重试')));
       return;
     }
     if (value['type'] == 'focus_resume') {
@@ -516,11 +598,7 @@ class SystemTtsPlayback extends ChangeNotifier with WidgetsBindingObserver {
         final next = _earliest();
         if (next != null) {
           _show(next.key, next.value);
-        } else if (nextSentenceRange(
-              _text,
-              _cursor,
-              maxLength: _maxLength,
-            ) ==
+        } else if (nextSentenceRange(_text, _cursor, maxLength: _maxLength) ==
             null) {
           final token = _generation;
           unawaited(_advance(token));
@@ -544,6 +622,7 @@ class SystemTtsPlayback extends ChangeNotifier with WidgetsBindingObserver {
     }
     final token = ++_generation;
     wantPlay = true;
+    if (isLinuxDesktop) NativePlayer.claimRemoteOwner(_mediaOwner);
     error = null;
     if (completed) {
       _offset = 0;
@@ -562,6 +641,7 @@ class SystemTtsPlayback extends ChangeNotifier with WidgetsBindingObserver {
   /// 会让蓝牙播放键、媒体通知都指向这个已经停下的朗读。所以这里照旧 `stop()`，
   /// 把焦点交还；`_pauseForInterruption` 才保留焦点等系统交还后自动续播。
   Future<void> pause() async {
+    _visibilityResumeGeneration = null;
     if (closed) return;
     // 用户（或任何非焦点路径）主动暂停：清掉「挂断后自动续播」的意图，
     // 电话里自己按停的，挂断后不会被复活。
@@ -578,6 +658,17 @@ class SystemTtsPlayback extends ChangeNotifier with WidgetsBindingObserver {
     await _halt(keepFocus: true);
   }
 
+  /// 永久丢失焦点（其他应用接管媒体音频、拔耳机）后不能等 GAIN：旧焦点
+  /// 已经交还，系统不会再发恢复事件。下次播放必须重新初始化引擎并重新
+  /// 申请焦点，否则在线引擎可能继续“成功”朗读但实际没有输出。
+  Future<void> _stopForFocusLoss() async {
+    if (closed) return;
+    _resumeOnFocusGain = false;
+    _pendingFocusResume = false;
+    _ready = false;
+    await _halt(keepFocus: false);
+  }
+
   /// [keepFocus] 为真时停朗读但**不放弃音频焦点**：一旦弃了，系统在对方
   /// 说完后就不会再发 GAIN，自动续播永远等不到。只有「被打断」这一种暂停
   /// 需要它；用户手动暂停与出错停下都交还焦点。
@@ -589,7 +680,9 @@ class SystemTtsPlayback extends ChangeNotifier with WidgetsBindingObserver {
     loading = false;
     _publish();
     try {
-      await (keepFocus ? SystemTts.pause() : SystemTts.stop());
+      await _engineCall<void>(
+        () => keepFocus ? SystemTts.pause() : SystemTts.stop(),
+      );
     } catch (_) {}
   }
 
@@ -623,10 +716,15 @@ class SystemTtsPlayback extends ChangeNotifier with WidgetsBindingObserver {
     if (notification) {
       _notificationQueue = _notificationQueue.then((_) async {
         if (closed) return;
-        if (!AudioPreferences.instance.backgroundPlayback.value) {
-          await NativePlayer.stopListenForeground();
+        if (!isLinuxDesktop &&
+            !AudioPreferences.instance.backgroundPlayback.value) {
+          await NativePlayer.stopListenForeground(owner: _mediaOwner);
         } else {
           await NativePlayer.startListenForeground(
+            owner: _mediaOwner,
+            linuxTts: true,
+            minimumRate: 0.25,
+            maximumRate: 4,
             title: book.title,
             episode: '系统朗读 · ${chapter.title}',
             coverUrl: book.coverUrl,
@@ -659,9 +757,28 @@ class SystemTtsPlayback extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  void _systemSessionChanged() {
+    if (DesktopSystemSession.instance.suspended) _ready = false;
+    didChangeAppLifecycleState(DesktopSystemSession.instance.lifecycle);
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    _appActive = state == AppLifecycleState.resumed;
+    _appActive = desktopInactiveStillVisible(state);
+    if (isLinuxDesktop && state == AppLifecycleState.detached) {
+      _visibilityResumeGeneration = null;
+      unawaited(close());
+      return;
+    }
+    if (isLinuxDesktop) {
+      if (!_allowed && wantPlay) {
+        _visibilityPause = _pauseForInterruption();
+        _visibilityResumeGeneration = _generation;
+      } else if (_allowed && _visibilityResumeGeneration != null) {
+        unawaited(_resumeAfterVisibility());
+      }
+      return;
+    }
     if (!_allowed) {
       // 切后台不是用户想停朗读（电话期间几乎必然走这一条）：按系统打断
       // 处理，等回到前台时若有欠下的 focus_resume 就补上续播。
@@ -675,6 +792,21 @@ class SystemTtsPlayback extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  Future<void> _resumeAfterVisibility() async {
+    final generation = _visibilityResumeGeneration;
+    await _visibilityPause;
+    if (closed ||
+        !_allowed ||
+        !NativePlayer.ownsRemoteOwner(_mediaOwner) ||
+        generation == null ||
+        generation != _generation ||
+        _visibilityResumeGeneration != generation) {
+      return;
+    }
+    _visibilityResumeGeneration = null;
+    await resume();
+  }
+
   Future<void> close() => _closeFuture ??= _close();
 
   Future<void> _close() async {
@@ -685,11 +817,12 @@ class SystemTtsPlayback extends ChangeNotifier with WidgetsBindingObserver {
     _loadRequest?.cancel();
     _resetQueue(_offset);
     wantPlay = false;
+    DesktopSystemSession.instance.removeListener(_systemSessionChanged);
     WidgetsBinding.instance.removeObserver(this);
     AudioPreferences.instance.backgroundPlayback.removeListener(
       _preferencesChanged,
     );
-    NativePlayer.clearRemoteCommandHandler();
+    NativePlayer.clearRemoteCommandHandler(owner: _mediaOwner);
     ListeningSession.instance.clear();
     notifyListeners();
     // Do not await the EventChannel cancel: awaiting a platform-stream
@@ -699,10 +832,10 @@ class SystemTtsPlayback extends ChangeNotifier with WidgetsBindingObserver {
     unawaited(_subscription?.cancel());
     _subscription = null;
     try {
-      await SystemTts.shutdown();
+      await _engineCall<void>(() => SystemTts.shutdown());
     } catch (_) {}
     await _notificationQueue;
-    await NativePlayer.stopListenForeground();
+    await NativePlayer.stopListenForeground(owner: _mediaOwner);
     dispose();
   }
 }

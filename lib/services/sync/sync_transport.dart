@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:xml/xml.dart';
 import '../platform_channel.dart';
+import '../webdav_client.dart' show webDavRetryAfter;
 import 'sync_document.dart';
 
 /// Storage only. Merge semantics are independent of the hosting service.
@@ -20,6 +21,13 @@ class SyncFailure implements Exception {
   final String message;
   @override
   String toString() => message;
+}
+
+class SyncRateLimitFailure extends SyncFailure {
+  SyncRateLimitFailure(this.retryAfter)
+    : super('WebDAV 请求过于频繁（HTTP 429），已暂停同步，稍后自动重试；本机记录已保留');
+
+  final Duration retryAfter;
 }
 
 void checkSlotName(String name) {
@@ -66,6 +74,11 @@ class WebDavSyncTransport implements SyncTransport {
       await for (final chunk in response.timeout(const Duration(seconds: 45))) {
         data.add(chunk);
         if (data.length > syncMaxBytes) throw const SyncFailure('远程文件超过同步大小限制');
+      }
+      if (response.statusCode == 429) {
+        throw SyncRateLimitFailure(
+          webDavRetryAfter(response.headers.value('retry-after')),
+        );
       }
       return (status: response.statusCode, bytes: data.takeBytes());
     } on SyncFailure {
@@ -195,8 +208,8 @@ class NativeSyncTransport implements SyncTransport {
 class SyncExchange {
   SyncExchange(this.transport);
   final SyncTransport transport;
-  Future<Map<String, SyncSlot>> readAll() async {
-    await transport.prepare();
+  Future<Map<String, SyncSlot>> readAll({bool prepare = true}) async {
+    if (prepare) await transport.prepare();
     final names = (await transport.list())
         .where(syncSlotPattern.hasMatch)
         .toSet();

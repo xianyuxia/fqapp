@@ -10,14 +10,47 @@ use crate::upstream::http::{HttpTransport, TransportError};
 pub const DEFAULT_USER_AGENT: &str = "com.dragon.read/66732 (Linux; U; Android 10; zh_CN; Pixel 4 XL; Build/QD1A.190821.007;tt-ok/3.12.13.4-tiktok)";
 
 /// HTTP codes treated as device-auth failures.
+///
+/// Only statuses that reject the identity itself. Upstream business codes such
+/// as 10001/10002 arrive in a 200 JSON body, never as an HTTP status, so they
+/// must not be compared against one here.
 fn is_auth_fail_status(status: u16) -> bool {
-    matches!(status, 401 | 403 | 10001 | 10002)
+    matches!(status, 401 | 403)
+}
+
+/// Statuses that mean "try again later", not "this device is bad": an
+/// overloaded server (429) or a transient server fault (5xx).
+fn is_retryable_status(status: u16) -> bool {
+    status == 429 || (500..=599).contains(&status)
+}
+
+/// Same-device retries for a transient failure (transport error, 429, 5xx).
+const TRANSIENT_RETRIES: usize = 2;
+
+/// First same-device backoff. Doubles per retry, capped at [RETRY_AFTER_CAP].
+const TRANSIENT_BACKOFF: Duration = Duration::from_millis(200);
+
+/// Upper bound for one retry delay, including a server `Retry-After` hint.
+const RETRY_AFTER_CAP: Duration = Duration::from_secs(5);
+
+/// Parses `Retry-After` as delta-seconds. The HTTP-date form is ignored (the
+/// upstream always sends seconds) and the result is capped so a hostile or
+/// misconfigured value cannot stall a request.
+fn parse_retry_after(value: Option<&str>) -> Option<Duration> {
+    let secs = value?.trim().parse::<u64>().ok()?;
+    Some(Duration::from_secs(secs).min(RETRY_AFTER_CAP))
 }
 
 #[derive(Debug, Clone)]
 pub enum ClientError {
-    /// Network failure or auth-class status: triggers device replacement.
+    /// A definite auth rejection: triggers device replacement.
     DeviceFailed(String),
+    /// A transient failure (transport error, 429, 5xx). It says nothing about
+    /// the device, so it is retried on the same identity.
+    Transient {
+        message: String,
+        retry_after: Option<Duration>,
+    },
     Http(String),
     Other(String),
 }
@@ -32,6 +65,7 @@ impl std::fmt::Display for ClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ClientError::DeviceFailed(m) => write!(f, "device failed: {m}"),
+            ClientError::Transient { message, .. } => f.write_str(message),
             ClientError::Http(m) => f.write_str(m),
             ClientError::Other(m) => f.write_str(m),
         }
@@ -119,15 +153,15 @@ impl UpstreamClient {
         }
     }
 
-    /// Performs a request with signature injection but no device retry.
+    /// Performs a request with signature injection but no retry of any kind.
     ///
-    /// Uncapped: only the video download path uses this. API callers must
-    /// use [UpstreamClient::do_request_capped].
+    /// Uncapped, so no API endpoint may use it: [UpstreamClient::do_request_capped]
+    /// is the bounded variant every JSON/API call goes through.
     pub async fn do_request(
         &self,
         req: &UpstreamRequest,
     ) -> Result<(Vec<u8>, Vec<(String, String)>), ClientError> {
-        self.do_resp(req, None).await
+        self.do_resp(req, None, !req.no_sign).await
     }
 
     /// Capped variant of [UpstreamClient::do_request] for JSON/API calls.
@@ -136,13 +170,14 @@ impl UpstreamClient {
         req: &UpstreamRequest,
         body_limit: usize,
     ) -> Result<(Vec<u8>, Vec<(String, String)>), ClientError> {
-        self.do_resp(req, Some(body_limit)).await
+        self.do_resp(req, Some(body_limit), !req.no_sign).await
     }
 
     async fn do_resp(
         &self,
         req: &UpstreamRequest,
         body_limit: Option<usize>,
+        auth_is_device_failure: bool,
     ) -> Result<(Vec<u8>, Vec<(String, String)>), ClientError> {
         let target = self.effective_url(&req.url);
         let parsed =
@@ -166,10 +201,9 @@ impl UpstreamClient {
             headers.push((k.clone(), v.clone()));
         }
 
+        let query = parsed.query().unwrap_or("");
         if !req.no_sign {
-            let sig = self
-                .sign
-                .generate_headers(parsed.query().unwrap_or(""), req.body.as_deref());
+            let sig = self.sign.generate_headers(query, req.body.as_deref());
             for (k, v) in sig {
                 headers.retain(|(hk, _)| !hk.eq_ignore_ascii_case(&k));
                 headers.push((k, v));
@@ -188,7 +222,13 @@ impl UpstreamClient {
             )
             .await
             .map_err(|e| match e {
-                TransportError::Network(m) => ClientError::DeviceFailed(m),
+                // A connection reset or read timeout says nothing about the
+                // device: retry it on the same identity instead of retiring a
+                // pooled device over a network hiccup.
+                TransportError::Network(m) => ClientError::Transient {
+                    message: m,
+                    retry_after: None,
+                },
                 // A local size limit is not a device fault: retiring the
                 // device here would rotate identities over a response that was
                 // merely too large.
@@ -196,16 +236,52 @@ impl UpstreamClient {
             })?;
 
         if resp.status != 200 {
-            if is_auth_fail_status(resp.status) {
+            if is_auth_fail_status(resp.status) && auth_is_device_failure {
                 return Err(ClientError::DeviceFailed(format!("HTTP {}", resp.status)));
+            }
+            if is_retryable_status(resp.status) {
+                return Err(ClientError::Transient {
+                    message: format!("HTTP {}", resp.status),
+                    retry_after: parse_retry_after(resp.header("retry-after")),
+                });
             }
             return Err(ClientError::Http(format!("HTTP {}", resp.status)));
         }
         Ok((resp.body, resp.headers))
     }
 
+    /// Runs one signed attempt, retrying transient failures (transport error,
+    /// 429/5xx) on the same identity with a short backoff. A `Retry-After`
+    /// hint is honoured up to [RETRY_AFTER_CAP].
+    async fn do_resp_with_transient_retry(
+        &self,
+        mut request_for_attempt: impl FnMut() -> Result<UpstreamRequest, ClientError>,
+        body_limit: Option<usize>,
+        auth_is_device_failure: bool,
+    ) -> Result<(Vec<u8>, Vec<(String, String)>), ClientError> {
+        let mut attempt = 0;
+        let mut delay = TRANSIENT_BACKOFF;
+        loop {
+            let req = request_for_attempt()?;
+            match self.do_resp(&req, body_limit, auth_is_device_failure).await {
+                Err(err @ ClientError::Transient { retry_after, .. })
+                    if attempt < TRANSIENT_RETRIES =>
+                {
+                    if !super::budget::retry_pause(retry_after.unwrap_or(delay)).await {
+                        return Err(err);
+                    }
+                    delay = (delay * 2).min(RETRY_AFTER_CAP);
+                    attempt += 1;
+                }
+                result => return result,
+            }
+        }
+    }
+
     /// Fetches a device, substitutes placeholders, signs, and retries with a
-    /// fresh device on device-class failures.
+    /// fresh device only on device-class failures (definite auth rejections).
+    /// Transient failures stay on the same device and get their own bounded
+    /// retry budget.
     ///
     /// Uncapped: only the video download path uses this. API callers must
     /// use [UpstreamClient::do_with_device_capped].
@@ -259,14 +335,22 @@ impl UpstreamClient {
             attempt.url = substitute_device(&req.url, &dev);
             attempt.pin = None;
 
-            match self.do_resp(&attempt, body_limit).await {
+            match self
+                .do_resp_with_transient_retry(|| Ok(attempt.clone()), body_limit, !attempt.no_sign)
+                .await
+            {
                 Ok((data, _)) => return Ok((data, dev)),
                 Err(err) => {
                     last_err = Some(err.clone());
                     if err.is_device_failed() {
+                        if super::budget::remaining().is_some_and(|left| left.is_zero()) {
+                            return Err(err);
+                        }
                         let _ = self.pool.replace_failed(&dev.device_id).await;
                         pin = None;
-                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        if !super::budget::retry_pause(Duration::from_millis(100)).await {
+                            return Err(err);
+                        }
                         continue;
                     }
                     return Err(err);
@@ -277,6 +361,75 @@ impl UpstreamClient {
             "device request failed after {} retries: {}",
             self.max_retries,
             last_err.map(|e| e.to_string()).unwrap_or_default()
+        )))
+    }
+
+    /// Calls the v5 playback door with the exact gzip bytes it signs.
+    ///
+    /// The v5 signer owns every query/header field and the wire body hash, so
+    /// this path deliberately bypasses generic signing. Transport/429/5xx
+    /// retries stay on the same device; only HTTP 401/403 replace it.
+    pub async fn v5_playback(&self, base: &str, body: &[u8]) -> Result<Vec<u8>, ClientError> {
+        let mut last_err = None;
+
+        for _ in 0..self.max_retries {
+            let dev = self
+                .pool
+                .get()
+                .await
+                .map_err(|e| ClientError::Other(format!("get device: {e}")))?;
+
+            let cdid = if dev.cdid.is_empty() {
+                dev.openudid.as_str()
+            } else {
+                dev.cdid.as_str()
+            };
+            let identity = crate::sign::v5::V5Identity {
+                device_id: &dev.device_id,
+                install_id: &dev.install_id,
+                cdid,
+            };
+            match self
+                .do_resp_with_transient_retry(
+                    || {
+                        let signed = crate::sign::v5::sign_playback_v5(base, body, &identity)
+                            .map_err(ClientError::Other)?;
+                        Ok(UpstreamRequest {
+                            method: Some("POST".to_string()),
+                            url: signed.url,
+                            body: Some(body.to_vec()),
+                            headers: signed.headers,
+                            no_sign: true,
+                            pin: None,
+                        })
+                    },
+                    Some(crate::upstream::http::API_BODY_LIMIT_BYTES),
+                    true,
+                )
+                .await
+            {
+                Ok((data, _)) => return Ok(data),
+                Err(err) => {
+                    last_err = Some(err.clone());
+                    if err.is_device_failed() {
+                        if super::budget::remaining().is_some_and(|left| left.is_zero()) {
+                            return Err(err);
+                        }
+                        let _ = self.pool.replace_failed(&dev.device_id).await;
+                        if !super::budget::retry_pause(Duration::from_millis(100)).await {
+                            return Err(err);
+                        }
+                        continue;
+                    }
+                    return Err(err);
+                }
+            }
+        }
+
+        Err(ClientError::Other(format!(
+            "v5 playback failed after {} device attempts: {}",
+            self.max_retries,
+            last_err.map(|error| error.to_string()).unwrap_or_default()
         )))
     }
 }
@@ -300,8 +453,9 @@ pub fn substitute_device(raw_url: &str, dev: &Device) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::substitute_device;
+    use super::{parse_retry_after, substitute_device, RETRY_AFTER_CAP};
     use crate::device::Device;
+    use std::time::Duration;
 
     fn device(openudid: &str) -> Device {
         Device {
@@ -315,6 +469,7 @@ mod tests {
             use_count: 0,
             cdid: "cdid-from-pool".to_string(),
             openudid: openudid.to_string(),
+            registered_version_code: String::new(),
         }
     }
 
@@ -359,5 +514,26 @@ mod tests {
         );
         assert_ne!(legacy_url, fresh_url);
         assert!(!legacy_url.contains("openudid-from-pool"));
+    }
+
+    // `Retry-After` must shorten a backoff, never stall a request behind a
+    // value a server (or a proxy) made up.
+    #[test]
+    fn retry_after_seconds_are_parsed_and_capped() {
+        assert_eq!(parse_retry_after(Some("2")), Some(Duration::from_secs(2)));
+        assert_eq!(parse_retry_after(Some(" 0 ")), Some(Duration::ZERO));
+        assert_eq!(
+            parse_retry_after(Some("3600")),
+            Some(RETRY_AFTER_CAP),
+            "an hour-long hint must be cut down to the cap"
+        );
+    }
+
+    #[test]
+    fn an_http_date_or_garbage_retry_after_is_ignored() {
+        for raw in ["Wed, 21 Oct 2015 07:28:00 GMT", "-1", "1.5", "sometime"] {
+            assert_eq!(parse_retry_after(Some(raw)), None, "{raw}");
+        }
+        assert_eq!(parse_retry_after(None), None);
     }
 }

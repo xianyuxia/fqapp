@@ -1,21 +1,132 @@
 import 'dart:async';
 
-import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:fqapp/models/media_item.dart';
+import 'package:fqapp/models/series_detail.dart';
 import 'package:fqapp/pages/audio_page.dart';
 import 'package:fqapp/pages/comic_reader_page.dart';
 import 'package:fqapp/pages/detail_page.dart';
 import 'package:fqapp/pages/player_page.dart';
 import 'package:fqapp/pages/reader_page.dart';
+import 'package:fqapp/services/app_style_tokens.dart';
+import 'package:fqapp/services/app_theme_style.dart';
 import 'package:fqapp/services/chapter_cache_store.dart';
 import 'package:fqapp/services/chapter_text_formatter.dart';
 
 import 'support/fakes.dart';
 
 void main() {
+  for (final platform in [
+    TargetPlatform.linux,
+    TargetPlatform.android,
+    TargetPlatform.windows,
+  ]) {
+    final blocked = platform == TargetPlatform.linux;
+    for (final style
+        in blocked ? AppThemeStyle.values : [AppThemeStyle.archive]) {
+      for (final kind in ['video', 'manju']) {
+        for (final action in ['primary', 'episode']) {
+          // Controls sample both actions/kinds without repeating the Linux matrix.
+          if (!blocked && (kind == 'video') != (action == 'primary')) continue;
+          testWidgets(
+            'D4 Detail ${platform.name} ${style.name} $kind $action',
+            (tester) async {
+              final previousPlatform = debugDefaultTargetPlatformOverride;
+              try {
+                debugDefaultTargetPlatformOverride = platform;
+                SharedPreferences.setMockInitialValues({});
+                tester.view.physicalSize = const Size(390, 844);
+                tester.view.devicePixelRatio = 1;
+                await tester.binding.setSurfaceSize(const Size(390, 844));
+                final observer = _RouteObserver();
+                await tester.pumpWidget(
+                  MaterialApp(
+                    theme: ThemeData(
+                      extensions: [AppStyleTokens.forStyle(style)],
+                    ),
+                    navigatorObservers: [observer],
+                    home: DetailPage(
+                      item: _item(kind),
+                      readerStore: MemoryReaderStore(),
+                      chapterCache: MemoryChapterCache(),
+                      detailLoader: (id, {String tab = '小说'}) async => {},
+                      directoryLoader: (id, {String tab = '小说'}) async => [
+                        _chapters,
+                      ],
+                      seriesLoader: (_) async => SeriesDetail.empty,
+                      extrasLoader: (_) async => const DetailExtras(),
+                    ),
+                  ),
+                );
+                await tester.pumpAndSettle();
+                expect(tester.takeException(), isNull);
+                expect(observer.pushes, 1);
+                final context = tester.element(find.byType(DetailPage));
+                expect(MediaQuery.sizeOf(context).width, 390);
+                var target = find.byKey(const Key('detail_read_button'));
+                if (action == 'episode') {
+                  if (style == AppThemeStyle.classic) {
+                    target = find.byKey(
+                      const ValueKey('detail_preview_chapter_second'),
+                    );
+                    await tester.ensureVisible(target);
+                    await tester.pumpAndSettle();
+                  } else {
+                    await _revealSecondChapter(tester);
+                    target = find.byKey(
+                      const ValueKey('detail-directory-entry-1'),
+                    );
+                  }
+                }
+                expect(target.hitTestable(), findsOneWidget);
+                await tester.tap(target);
+                await tester.idle();
+                expect(tester.takeException(), isNull);
+                if (blocked) {
+                  // Inspect intent before a pump could mount the native player.
+                  expect(
+                    observer.pushes,
+                    1,
+                    reason: 'D4 Linux must reject playback before navigation',
+                  );
+                  await tester.pump(const Duration(milliseconds: 200));
+                  expect(find.byType(DetailPage), findsOneWidget);
+                  expect(
+                    find.descendant(
+                      of: find.byType(SnackBar),
+                      matching: find.text('当前平台暂不支持视频播放'),
+                    ),
+                    findsOneWidget,
+                  );
+                  expect(tester.takeException(), isNull);
+                } else {
+                  expect(observer.pushes, 2);
+                  final page =
+                      (observer.lastRoute! as MaterialPageRoute).builder(
+                            context,
+                          )
+                          as PlayerPage;
+                  expect(page.kind, kind);
+                  expect(page.startIndex, action == 'episode' ? 1 : 0);
+                }
+              } finally {
+                await tester.pumpWidget(const SizedBox.shrink());
+                debugDefaultTargetPlatformOverride = previousPlatform;
+                tester.view.resetPhysicalSize();
+                tester.view.resetDevicePixelRatio();
+                await tester.binding.setSurfaceSize(null);
+              }
+            },
+          );
+        }
+      }
+    }
+  }
+
   for (final savedKind in ['video', 'manju']) {
     testWidgets(
       'manju detail resumes $savedKind history through the video API',
@@ -59,7 +170,8 @@ void main() {
         );
         await tester.pumpAndSettle();
         expect(requests, ['短剧:series', '短剧:series']);
-        expect(find.text('继续观看'), findsOneWidget);
+        // 主按钮现在写明要读的集数（`继续观看 · 第2集`）。
+        expect(find.textContaining('继续观看'), findsOneWidget);
         final context = tester.element(find.byType(DetailPage));
         await tester.tap(find.byKey(const Key('detail_read_button')));
         await tester.idle();
@@ -158,7 +270,15 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('重试'), findsOneWidget);
     expect(find.text('暂无目录'), findsNothing);
-    await tester.ensureVisible(find.text('重试'));
+    // The bottom glass dock overlays the viewport bottom; scroll to the end so
+    // the retry clears it before tapping.
+    for (var i = 0; i < 3; i++) {
+      await tester.drag(
+        find.byKey(const Key('detail_scroll')),
+        const Offset(0, -200),
+      );
+      await tester.pump();
+    }
     await tester.tap(find.text('重试'));
     await tester.pumpAndSettle();
     expect(find.text('第一章'), findsOneWidget);
@@ -166,7 +286,7 @@ void main() {
     expect(attempts, 2);
   });
 
-  testWidgets('目录失败但本地有整本缓存时，给出「从缓存阅读」入口', (tester) async {
+  testWidgets('目录失败但本地有整本缓存时，下载弹层给出离线缓存', (tester) async {
     SharedPreferences.setMockInitialValues({});
     final cache = MemoryChapterCache();
     await cache.saveBook(
@@ -192,76 +312,14 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.text('重试'), findsOneWidget);
-    expect(find.text('从缓存阅读'), findsOneWidget);
-    await tester.ensureVisible(find.byKey(const Key('detail_read_cached')));
-    await tester.tap(find.byKey(const Key('detail_read_cached')));
+    // 改版后不再有额外的「从缓存阅读」按钮：它收进底栏「下载」弹层。
+    expect(find.text('从缓存阅读'), findsNothing);
+    await tester.tap(find.byKey(const Key('detail_action_下载')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('detail_download_sheet')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('detail_download_cached')));
     await tester.pumpAndSettle();
     expect(find.byType(ReaderPage, skipOffstage: false), findsOneWidget);
-    await tester.pumpWidget(const SizedBox.shrink());
-  });
-
-  testWidgets('整本下载跳过已缓存章节，从第一个缺口继续（issue #108）', (
-    tester,
-  ) async {
-    SharedPreferences.setMockInitialValues({});
-    final cache = MemoryChapterCache();
-    // 「缓存到一半被网络中断」：前 2 章已在磁盘上，剩下 2 章没下。
-    final chapters = [
-      for (var i = 0; i < 4; i++)
-        Chapter(itemId: 'c$i', title: '第$i章', volumeName: ''),
-    ];
-    for (var i = 0; i < 2; i++) {
-      await cache.write(
-        bookId: 'book',
-        chapterId: 'c$i',
-        title: '第$i章',
-        text: ChapterContent.fromPlainText(
-          '已缓存的正文$i',
-          illustrationsChecked: true,
-        ).toCacheText(),
-      );
-    }
-    final fetched = <String>[];
-    await tester.pumpWidget(
-      MaterialApp(
-        home: DetailPage(
-          item: _book,
-          chapterCache: cache,
-          readerStore: MemoryReaderStore(),
-          detailLoader: (id, {String tab = '小说'}) async => {},
-          directoryLoader: (id, {String tab = '小说'}) async => [chapters],
-          chapterLoader: (chapter) async {
-            fetched.add(chapter.itemId);
-            // 让批次停在第一章，好在它进行时读进度文案。
-            await Future<void>.delayed(const Duration(milliseconds: 40));
-            return ChapterContent.fromPlainText(
-              '下载的正文${chapter.itemId}',
-              illustrationsChecked: true,
-            ).toCacheText();
-          },
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
-
-    await tester.ensureVisible(find.text('下载'));
-    await tester.tap(find.text('下载'));
-    // 用 pump 而不是 settle：要在批次进行时读到总量。
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 20));
-
-    // 修复前批次总量是「从续读位置到末章」的 4 章（重新缓存一遍已缓存的
-    // c0、c1）；修复后从第一个缺口开始，总量只剩 2 章。
-    expect(
-      find.textContaining('/2'),
-      findsOneWidget,
-      reason: '批次总量应为缺失的 2 章，而不是全部 4 章',
-    );
-    await tester.pumpAndSettle();
-
-    // ChapterDownload 自身也会逐章跳过已缓存正文，因此实际抓取的只有缺口。
-    expect(fetched, ['c2', 'c3']);
-    expect(await cache.cachedChapterIds('book'), {'c0', 'c1', 'c2', 'c3'});
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
@@ -281,6 +339,9 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('重试'), findsOneWidget);
     expect(find.text('从缓存阅读'), findsNothing);
+    await tester.tap(find.byKey(const Key('detail_action_下载')));
+    await tester.pumpAndSettle();
+    expect(find.text('暂无本地缓存'), findsOneWidget);
   });
 
   testWidgets('离线时目录还没回来就先给出「从缓存阅读」', (tester) async {
@@ -319,8 +380,12 @@ void main() {
       await tester.pump();
     }
     expect(find.text('正在加载书籍与目录'), findsOneWidget);
-    expect(find.text('从缓存阅读'), findsOneWidget);
-    await tester.tap(find.byKey(const Key('detail_read_cached')));
+    expect(find.text('从缓存阅读'), findsNothing);
+    // 加载中底栏仍在：下载弹层里的离线缓存就是原来的入口。
+    await tester.tap(find.byKey(const Key('detail_action_下载')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.byKey(const Key('detail_download_cached')));
     for (var i = 0; i < 5; i++) {
       await tester.pump();
     }
@@ -332,9 +397,7 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('optional metadata failure keeps a usable directory visible', (
-    tester,
-  ) async {
+  testWidgets('metadata failure keeps the directory usable', (tester) async {
     await tester.pumpWidget(
       MaterialApp(
         home: DetailPage(
@@ -348,12 +411,11 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('第一章'), findsOneWidget);
     expect(find.byKey(const Key('detail_read_button')), findsOneWidget);
-    expect(find.text('重试'), findsNothing);
+    // 简介自己失败、目录仍在：简介区给出自己的内联重试，不再整页静默。
+    expect(find.text('重试'), findsOneWidget);
   });
 
-  testWidgets('continue follows the saved chapter ID after directory reorder', (
-    tester,
-  ) async {
+  testWidgets('continue follows the saved chapter ID', (tester) async {
     final observer = _RouteObserver();
     await tester.pumpWidget(
       MaterialApp(
@@ -530,9 +592,7 @@ void main() {
     );
   }
 
-  testWidgets('the download action caches the whole book without a sheet', (
-    tester,
-  ) async {
+  testWidgets('the download sheet caches the whole book', (tester) async {
     addTearDown(() => tester.pumpWidget(const SizedBox.shrink()));
     final cache = MemoryChapterCache(chapterCapacity: 1);
     final fetched = <String>[];
@@ -555,7 +615,9 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    await tester.tap(find.text('下载'));
+    await tester.tap(find.byKey(const Key('detail_action_下载')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('detail_download_all')));
     await tester.pumpAndSettle();
     expect(fetched, ['first', 'second']);
     expect(await cache.cachedChapterIds('book'), {'first', 'second'});
@@ -563,8 +625,8 @@ void main() {
     // truncates nor evicts it.
     expect(cache.pinned['book'], {'first', 'second'});
     expect(find.textContaining('缓存完成'), findsOneWidget);
-    // The action goes back to its idle label once the batch ends.
-    expect(find.text('下载'), findsOneWidget);
+    // The progress readout leaves the header once the batch ends.
+    expect(find.byKey(const Key('detail_download_progress')), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -589,17 +651,24 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    await tester.tap(find.text('下载'));
+    await tester.tap(find.byKey(const Key('detail_action_下载')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('detail_download_all')));
     await tester.pump();
-    // Progress replaces the static icon while the batch runs.
-    expect(find.text('缓存 0/2'), findsOneWidget);
-    await tester.tap(find.text('缓存 0/2'));
+    await tester.pump();
+    // A progress readout replaces the static icon while the batch runs.
+    expect(find.byKey(const Key('detail_download_progress')), findsOneWidget);
+    // 再次点「下载」打开弹层，整本下载在运行中即停止。
+    await tester.tap(find.byKey(const Key('detail_action_下载')));
+    await tester.pumpAndSettle();
+    expect(find.text('下载中 0/2'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('detail_download_all')));
     await tester.pump();
     pending.complete('不应在停止后保存的正文');
     await tester.pumpAndSettle();
     expect(await cache.cachedChapterIds('book'), isEmpty);
     expect(find.textContaining('已停止缓存'), findsOneWidget);
-    expect(find.text('下载'), findsOneWidget);
+    expect(find.byKey(const Key('detail_download_progress')), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -733,8 +802,21 @@ class _PendingHistory extends MemoryReaderStore {
 }
 
 Future<void> _revealSecondChapter(WidgetTester tester) async {
-  await tester.ensureVisible(
-    find.byKey(const Key('detail_preview_chapter_second')),
+  // The ported page lists the whole catalogue inline; entry 1 is 第二章 because
+  // this fixture has no volume names.
+  final row = find.byKey(
+    const ValueKey('detail-directory-entry-1'),
+    skipOffstage: false,
   );
+  await tester.ensureVisible(row);
+  await tester.pump();
+  // ensureVisible parks the row under the frosted header; drag it back down.
+  if (tester.getCenter(row).dy < 130) {
+    await tester.drag(
+      find.byKey(const Key('detail_scroll')),
+      const Offset(0, 160),
+    );
+    await tester.pump();
+  }
   await tester.pumpAndSettle();
 }

@@ -4,13 +4,15 @@ import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fqapp/models/chapter_media.dart';
 import 'package:fqapp/models/media_item.dart';
 import 'package:fqapp/pages/comic_reader_page.dart';
 import 'package:fqapp/services/comic_page_layout.dart';
 import 'package:fqapp/services/library_store.dart';
+
+import 'support/fakes.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -100,6 +102,9 @@ void main() {
           chapters: _chapters,
           startIndex: 0,
           readerStore: _ComicStore(),
+          // 不能落到默认 ChapterCacheStore：它要在 fake-async 下等真实密钥
+          // 存储，超时定时器会活到测试结束（A17）。
+          cache: MemoryChapterCache(),
           chapterLoader: (chapter) async => [
             const ComicImage(
               url: 'http://127.0.0.1:9/_session/cap-launch-1/src/page-1.jpg',
@@ -230,6 +235,111 @@ void main() {
       await _leave(tester);
     },
   );
+
+  testWidgets('paged mode restores the saved page and saves page progress', (
+    tester,
+  ) async {
+    final store = _ComicStore()
+      ..records['manga:comic-test'] = _saved(position: 2.3);
+    await tester.pumpWidget(
+      _app(store: store, provider: _providerFor(portrait)),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('切换为翻页模式'));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<PageView>(
+            find.byKey(const ValueKey('comic-reader-paged-view')),
+          )
+          .controller!
+          .page,
+      closeTo(2, .001),
+    );
+    expect(find.text('第 3 / 6 页'), findsOneWidget);
+
+    // A page change must move the durable position like a scroll does.
+    await tester.drag(
+      find.byKey(const ValueKey('comic-reader-paged-view')),
+      const Offset(-500, 0),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('第 4 / 6 页'), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pump();
+    expect(store.records['manga:comic-test']!['position'], closeTo(3, .001));
+    expect(tester.takeException(), isNull);
+    await _leave(tester);
+
+    // The page recorded in paged mode is where the reader resumes.
+    await tester.pumpWidget(
+      _app(store: store, provider: _providerFor(portrait)),
+    );
+    await tester.pumpAndSettle();
+    expect(_scroll(tester).offset, closeTo(4800, 1));
+    expect(find.text('第 4 / 6 页'), findsOneWidget);
+    await _leave(tester);
+  });
+
+  testWidgets('switching between strip and paged modes keeps the page', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _app(store: _ComicStore(), provider: _providerFor(portrait)),
+    );
+    await tester.pumpAndSettle();
+    _scroll(tester).jumpTo(2400); // 800-wide, 1600-high pages: page 2.
+    await tester.pumpAndSettle();
+    expect(find.text('第 2 / 6 页'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('切换为翻页模式'));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<PageView>(
+            find.byKey(const ValueKey('comic-reader-paged-view')),
+          )
+          .controller!
+          .page,
+      closeTo(1, .001),
+    );
+    expect(find.text('第 2 / 6 页'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('切换为条漫模式'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('comic-reader-pages')), findsOneWidget);
+    expect(_scroll(tester).offset, closeTo(1600, 1));
+    expect(find.text('第 2 / 6 页'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await _leave(tester);
+  });
+
+  testWidgets('paged mode records progress and time after a chapter change', (
+    tester,
+  ) async {
+    final store = _ComicStore();
+    await tester.pumpWidget(
+      _app(store: store, provider: _providerFor(portrait)),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('切换为翻页模式'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('下一章'));
+    await tester.pumpAndSettle();
+    expect(find.text('第二章'), findsOneWidget);
+    final readSeconds = store.readSeconds;
+    // Reading time uses the wall clock, so give the new session a real second.
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 1100)),
+    );
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await tester.pump();
+    expect(store.readSeconds - readSeconds, greaterThanOrEqualTo(1));
+    expect(store.records['manga:comic-test']!['chapterId'], 'chapter-2');
+    expect(tester.takeException(), isNull);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await _leave(tester);
+  });
 
   for (final state in [
     'pending chapter',
@@ -560,6 +670,8 @@ Widget _app({
     chapters: chapters ?? _chapters,
     startIndex: startIndex,
     readerStore: store,
+    // 同上：测试不应打开真实的加密目录缓存。
+    cache: MemoryChapterCache(),
     chapterLoader: loader ?? (chapter) async => _images(chapter),
     imageProviderFactory: provider,
   ),
@@ -593,6 +705,7 @@ class _TestImageProvider extends ImageProvider<_TestImageProvider> {
 
 class _ComicStore implements ReaderStore {
   final records = <String, Map<String, dynamic>>{};
+  double readSeconds = 0;
   Future<void>? writeDelay;
   bool failWrites = false;
 
@@ -637,7 +750,10 @@ class _ComicStore implements ReaderStore {
     String kind,
     double seconds, {
     DateTime? at,
-  }) async {}
+  }) async {
+    readSeconds += seconds;
+  }
+
   @override
   Future<Set<String>> watchedEpisodeIds(String id) async => <String>{};
 

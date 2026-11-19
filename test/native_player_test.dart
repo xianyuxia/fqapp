@@ -1,9 +1,12 @@
 import 'dart:async';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
+import 'package:flutter/foundation.dart';
+import 'package:fqapp/services/platform_channel.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fqapp/models/media_item.dart';
+import 'package:fqapp/services/app_log.dart';
 import 'package:fqapp/services/audio_preferences.dart';
 import 'package:fqapp/services/native_player.dart';
 import 'package:fqapp/widgets/video_player_chrome.dart';
@@ -35,6 +38,64 @@ void main() {
       return null;
     });
   });
+
+  test(
+    'Linux transport retains seek payload and rejects stale owners',
+    () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      final old = NativePlayer.allocateRemoteOwner();
+      final current = NativePlayer.allocateRemoteOwner();
+      final actions = <String>[];
+      final seeks = <int>[];
+      NativePlayer.setRemoteCommandHandler(
+        owner: old,
+        onAction: (_) => fail('stale callback'),
+      );
+      NativePlayer.setRemoteCommandHandler(
+        owner: current,
+        onAction: actions.add,
+        onSeek: seeks.add,
+      );
+      await NativePlayer.startListenForeground(
+        owner: current,
+        title: 'synthetic',
+        episode: 'one',
+      );
+      expect(calls.last.arguments, containsPair('transportV2', true));
+      expect(calls.last.arguments, containsPair('seekSupported', true));
+      await PlatformChannels.notify(
+        'fqapp/native_player',
+        'onNotificationAction',
+        {'owner': old, 'action': 'pause'},
+      );
+      NativePlayer.clearRemoteCommandHandler(owner: old);
+      for (final action in ['play', 'play', 'pause']) {
+        await PlatformChannels.notify(
+          'fqapp/native_player',
+          'onNotificationAction',
+          {'owner': current, 'action': action},
+        );
+      }
+      await PlatformChannels.notify(
+        'fqapp/native_player',
+        'onNotificationAction',
+        {'owner': current, 'action': 'seekTo', 'positionMs': 4200},
+      );
+      expect(actions, ['play', 'play', 'pause']);
+      expect(seeks, [4200]);
+      final count = calls.length;
+      await NativePlayer.startListenForeground(
+        owner: old,
+        title: 'late',
+        episode: 'old',
+      );
+      expect(calls.length, count);
+      await NativePlayer.stopListenForeground(owner: current);
+      expect(calls.last.arguments, {'owner': current});
+      NativePlayer.clearRemoteCommandHandler(owner: current);
+    },
+  );
 
   Future<void> cleanUp(WidgetTester tester, NativePlayer player) async {
     if (find.byType(VideoPlayerChrome).evaluate().isNotEmpty) {
@@ -93,6 +154,54 @@ void main() {
       expect(calls.where((call) => call.method == 'play'), isEmpty);
     },
   );
+
+  nativeTest('a failed native dispose is logged and retried', (
+    tester,
+    player,
+  ) async {
+    createGate = Completer<Map<String, dynamic>>();
+    var disposeAttempts = 0;
+    final warningsBefore = AppLog.instance.entries
+        .where((entry) => entry.tag == 'player-native')
+        .length;
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(_methods, (call) async {
+      calls.add(call);
+      if (call.method == 'create') {
+        return createGate?.future ?? Future.value({'playerId': 71});
+      }
+      if (call.method == 'dispose') {
+        disposeAttempts++;
+        if (disposeAttempts == 1) {
+          throw PlatformException(code: 'dispose-unavailable');
+        }
+      }
+      return null;
+    });
+
+    final creation = player
+        .create('https://example.invalid/late.mp4', '')
+        .then<Object>((value) => value, onError: (Object error) => error);
+    await tester.pump();
+    await player.dispose();
+    await tester.pump();
+    createGate!.complete({'playerId': 71});
+    for (var i = 0; i < 6 && disposeAttempts < 2; i++) {
+      await tester.pump();
+    }
+    await tester.pump();
+
+    expect(await creation, isStateError);
+    // 失败没有被记忆化：迟到的 create 回复触发的第二次释放成功了。
+    expect(disposeAttempts, 2);
+    expect(
+      AppLog.instance.entries
+          .where((entry) => entry.tag == 'player-native')
+          .length,
+      warningsBefore + 1,
+    );
+  });
 
   nativeTest('all dispose callers wait for the same native release', (
     tester,
@@ -378,45 +487,45 @@ void main() {
     },
   );
 
-  nativeTest(
-    'textureChanged resets a pre-swap rotation correction (#36)',
-    (tester, player) async {
-      final creation = player.create(
-        'https://example.invalid/swap-rotation.mp4',
-        '',
-      );
-      await tester.pump();
-      await _sendEvent({'playerId': 71, 'type': 'created', 'value': 9});
-      await tester.pump();
-      expect(await creation, 9);
-      // The size event landed before the SurfaceTexture swap, so it still
-      // carries the pre-swap correction for the rotated source.
-      await _sendEvent({
-        'playerId': 71,
-        'type': 'videoSize',
-        'width': 1920,
-        'height': 1080,
-        'rotationCorrection': 90,
-      });
-      await tester.pump();
-      expect(player.videoRotationCorrection, 90);
-      // The swap moves output to a SurfaceTexture, which applies the format
-      // rotation itself: the correction must drop to 0, or the texture gets
-      // rotated a second time and stretches up to fullscreen. The geometry
-      // re-emit is what refreshes the feed's rotation notifier.
-      final sizes = <Size>[];
-      final sub = player.videoSizeStream.listen(sizes.add);
-      await _sendEvent({'playerId': 71, 'type': 'textureChanged', 'value': 12});
-      await tester.pump();
-      expect(player.textureId, 12);
-      expect(player.videoRotationCorrection, 0);
-      expect(sizes, [const Size(1920, 1080)]);
-      // No awaited cancel: awaiting a lone broadcast cancel() stalls in the
-      // test's fake-async zone. dispose() closes the controller, which drops
-      // the subscription; production cancels via the shared Future.wait path.
-      unawaited(sub.cancel());
-    },
-  );
+  nativeTest('textureChanged resets a pre-swap rotation correction (#36)', (
+    tester,
+    player,
+  ) async {
+    final creation = player.create(
+      'https://example.invalid/swap-rotation.mp4',
+      '',
+    );
+    await tester.pump();
+    await _sendEvent({'playerId': 71, 'type': 'created', 'value': 9});
+    await tester.pump();
+    expect(await creation, 9);
+    // The size event landed before the SurfaceTexture swap, so it still
+    // carries the pre-swap correction for the rotated source.
+    await _sendEvent({
+      'playerId': 71,
+      'type': 'videoSize',
+      'width': 1920,
+      'height': 1080,
+      'rotationCorrection': 90,
+    });
+    await tester.pump();
+    expect(player.videoRotationCorrection, 90);
+    // The swap moves output to a SurfaceTexture, which applies the format
+    // rotation itself: the correction must drop to 0, or the texture gets
+    // rotated a second time and stretches up to fullscreen. The geometry
+    // re-emit is what refreshes the feed's rotation notifier.
+    final sizes = <Size>[];
+    final sub = player.videoSizeStream.listen(sizes.add);
+    await _sendEvent({'playerId': 71, 'type': 'textureChanged', 'value': 12});
+    await tester.pump();
+    expect(player.textureId, 12);
+    expect(player.videoRotationCorrection, 0);
+    expect(sizes, [const Size(1920, 1080)]);
+    // No awaited cancel: awaiting a lone broadcast cancel() stalls in the
+    // test's fake-async zone. dispose() closes the controller, which drops
+    // the subscription; production cancels via the shared Future.wait path.
+    unawaited(sub.cancel());
+  });
 
   nativeTest(
     'textureChanged arriving before the create reply wins over created',
@@ -435,9 +544,9 @@ void main() {
     },
   );
 
-  // issue #129：变速引擎只对听书（纯音频）播放器下发，否则原生侧会给视频
-  // 也打开 AudioTrack 变速，画面与声音不再步进同一套计时。
-  testWidgets('audio players request the platform rate engine on create', (
+  // issue #129 / #170：变速引擎只对听书（纯音频）播放器下发，否则原生侧会让
+  // 视频也走 AudioTrack 变速；默认内建 Sonic（1.0.121 的行为）。
+  testWidgets('audio players request the built-in rate engine on create', (
     tester,
   ) async {
     AudioPreferences.instance.resetForTest();
@@ -455,12 +564,11 @@ void main() {
       await _sendEvent({'playerId': 71, 'type': 'created', 'value': 9});
       await tester.pump();
       expect(await creation, 9);
-      final arguments = calls
-          .firstWhere((call) => call.method == 'create')
-          .arguments
-          as Map<Object?, Object?>;
+      final arguments =
+          calls.firstWhere((call) => call.method == 'create').arguments
+              as Map<Object?, Object?>;
       expect(arguments['audioOnly'], true);
-      expect(arguments['audioRateEngine'], 'wsola');
+      expect(arguments['audioRateEngine'], 'builtIn');
     } finally {
       await player.dispose();
       await tester.pump();

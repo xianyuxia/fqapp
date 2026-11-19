@@ -213,7 +213,7 @@ class SyncSlot {
   String get filename => '$device.${sequence.isEven ? 'a' : 'b'}.json';
   Uint8List encode() {
     final body = {
-      'format': 'fqappx.sync',
+      'format': 'fqapp.multi-device-sync',
       'version': 1,
       'device': device,
       'sequence': sequence,
@@ -240,7 +240,7 @@ class SyncSlot {
       throw const FormatException('同步文件校验失败，可能尚未写完');
     }
     final device = body['device'], sequence = body['sequence'];
-    if (body['format'] != 'fqappx.sync' ||
+    if (body['format'] != 'fqapp.multi-device-sync' ||
         body['version'] != 1 ||
         device is! String ||
         !syncActorPattern.hasMatch(device) ||

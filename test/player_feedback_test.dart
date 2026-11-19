@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -59,13 +59,25 @@ void main() {
       (tester) async {
         final session = _Session(loader: (_) => Future.error(error));
         await _mount(tester, session);
+        if (error is ApiException && (error.statusCode ?? 0) >= 500) {
+          // Service errors stay in the loading state during bounded backoff.
+          // Only exhaust the two retries before checking the final message.
+          expect(find.text(title), findsNothing);
+          expect(session.requests, ['1']);
+          await tester.pump(const Duration(milliseconds: 500));
+          await _flush(tester);
+          expect(session.requests, ['1', '1']);
+          await tester.pump(const Duration(milliseconds: 1500));
+          await _flush(tester);
+        }
         expect(find.text(title), findsOneWidget);
         expect(find.textContaining('private-token'), findsNothing);
         expect(find.textContaining(error.runtimeType.toString()), findsNothing);
         expect(find.byType(CircularProgressIndicator), findsNothing);
         expect(find.widgetWithText(OutlinedButton, '重试'), findsOneWidget);
         await tester.pump(const Duration(seconds: 30));
-        expect(session.requests, ['1']);
+        // 起播 + 两次静默重试都失败才出提示，之后不再自己重来。
+        expect(session.requests, ['1', '1', '1']);
         expect(session.players, isEmpty);
       },
     );

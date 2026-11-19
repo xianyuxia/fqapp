@@ -21,7 +21,9 @@ void main() {
     keys = SecureKeyProvider(storage: InMemorySecureKeyStorage());
     store = HiveDramaDownloadStore(
       keys: keys,
-      directoryResolver: () async => videoDir,
+      // directoryResolver 返回应用私有根，store 自己在下面再拼
+      // `offline-video`；videoDir 就是拼出来的那个目录。
+      directoryResolver: () async => temp,
     );
   });
 
@@ -41,12 +43,13 @@ void main() {
     int index = 0,
     int bytes = 1024,
     bool withFile = true,
+    String? filePath,
     int? cachedAt,
     bool auto = false,
   }) {
     final path =
-        '${videoDir.path}${Platform.pathSeparator}$itemId.mp4';
-    if (withFile) {
+        filePath ?? '${videoDir.path}${Platform.pathSeparator}$itemId.mp4';
+    if (withFile && filePath == null) {
       File(path).writeAsBytesSync(List.filled(bytes, 1));
     }
     return CachedEpisode(
@@ -77,13 +80,43 @@ void main() {
 
   test('toSource 生成 file:// 取流结果并保留画质档', () async {
     await store.saveEpisode(episode());
-    final source = (await store.episode('ep1'))!.toSource();
+    final cached = (await store.episode('ep1'))!;
+    final source = cached.toSource();
     expect(source.url.startsWith('file://'), isTrue);
+    expect(Uri.parse(source.url).toFilePath(), cached.filePath);
+    expect(source.variants.single.url, source.url);
     expect(source.keyHex, '0102');
     expect(source.variants, hasLength(1));
     expect(source.variants.first.name, '1080P');
     expect(source.variants.first.height, 1080);
   });
+
+  test('Windows 自动缓存多集后每集及画质档均能读取原文件', () async {
+    final special = Directory('${videoDir.path}/缓存 #100%')..createSync();
+    for (var index = 0; index < 6; index++) {
+      final file = File('${special.path}/第 ${index + 1} 集.mp4');
+      final bytes = List<int>.filled(32, index + 1);
+      await file.writeAsBytes(bytes);
+      await store.saveEpisode(
+        episode(
+          itemId: 'ep$index',
+          index: index,
+          filePath: file.path,
+          bytes: bytes.length,
+          auto: true,
+        ),
+      );
+    }
+    for (final index in [1, 4, 0, 5, 2, 3, 1]) {
+      final cached = (await store.episode('ep$index'))!;
+      expect(cached.auto, isTrue);
+      final source = cached.toSource();
+      for (final url in [source.url, source.variants.single.url]) {
+        final file = File.fromUri(Uri.parse(url));
+        expect(await file.readAsBytes(), List<int>.filled(32, index + 1));
+      }
+    }
+  }, skip: !Platform.isWindows);
 
   test('损坏记录按未缓存处理，不给出不可回放的取流结果', () async {
     // Seed the corrupt record into the encrypted box the store actually
@@ -111,12 +144,8 @@ void main() {
     // 落在同一毫秒，`List.sort` 的比较返回 0 且不保证稳定——用真实时钟会
     // 变成偶发失败（CI 上实测到过 series1/series2 顺序反转）。这里直接钉死
     // 时间戳，让断言只依赖实现逻辑，不依赖计时精度。
-    await store.saveEpisode(
-      episode(itemId: 'ep1', index: 1, cachedAt: 1000),
-    );
-    await store.saveEpisode(
-      episode(itemId: 'ep2', index: 0, cachedAt: 2000),
-    );
+    await store.saveEpisode(episode(itemId: 'ep1', index: 1, cachedAt: 1000));
+    await store.saveEpisode(episode(itemId: 'ep2', index: 0, cachedAt: 2000));
     await store.saveEpisode(
       episode(itemId: 'ep9', seriesId: 'series2', cachedAt: 3000),
     );
@@ -150,15 +179,22 @@ void main() {
     );
     for (final (relative, number) in const [17, 13, 15, 14, 16].indexed) {
       await store.saveEpisode(
-        episode(itemId: 'ep$number', index: relative, cachedAt: 1000 + relative),
+        episode(
+          itemId: 'ep$number',
+          index: relative,
+          cachedAt: 1000 + relative,
+        ),
       );
     }
 
     final series1 = (await store.dramas()).single;
-    expect(
-      series1.episodes.map((e) => e.itemId).toList(),
-      ['ep13', 'ep14', 'ep15', 'ep16', 'ep17'],
-    );
+    expect(series1.episodes.map((e) => e.itemId).toList(), [
+      'ep13',
+      'ep14',
+      'ep15',
+      'ep16',
+      'ep17',
+    ]);
   });
 
   test('removeEpisode 连带删除视频文件', () async {
@@ -177,6 +213,41 @@ void main() {
     expect(await store.dramas(), isEmpty);
     expect(await store.isDownloaded('ep1'), isFalse);
     expect(await store.isDownloaded('ep2'), isFalse);
+  });
+
+  test('removeEpisode 只删离线视频根目录内的文件', () async {
+    // 记录被改成指向根外：只删记录，绝不删那个文件（否则就是任意文件删除）。
+    final outside = File('${temp.path}${Platform.pathSeparator}secret.txt')
+      ..writeAsStringSync('keep me');
+    await store.saveEpisode(episode(itemId: 'evil', filePath: outside.path));
+    await store.removeEpisode('evil');
+    expect(outside.existsSync(), isTrue);
+    expect(await store.isDownloaded('evil'), isFalse);
+  });
+
+  test('removeEpisode 不被根内路径里的 .. 绕过', () async {
+    final sep = Platform.pathSeparator;
+    final outside = File('${temp.path}${sep}secret.txt')
+      ..writeAsStringSync('keep me');
+    final sneaky = '${videoDir.path}$sep..${sep}secret.txt';
+    await store.saveEpisode(episode(itemId: 'evil', filePath: sneaky));
+    await store.removeEpisode('evil');
+    expect(outside.existsSync(), isTrue);
+    expect(await store.isDownloaded('evil'), isFalse);
+  });
+
+  test('removeDrama 只删根内文件，根外路径保留', () async {
+    final inside = episode(itemId: 'ep1');
+    final outside = File('${temp.path}${Platform.pathSeparator}secret.txt')
+      ..writeAsStringSync('keep me');
+    await store.saveEpisode(inside);
+    await store.saveEpisode(
+      episode(itemId: 'ep2', index: 1, filePath: outside.path),
+    );
+    await store.removeDrama('series1');
+    expect(File(inside.filePath).existsSync(), isFalse);
+    expect(outside.existsSync(), isTrue);
+    expect(await store.dramas(), isEmpty);
   });
 
   test('删掉某剧最后一集时一并清掉目录，不留孤儿', () async {

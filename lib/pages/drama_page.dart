@@ -1,9 +1,13 @@
 import '../widgets/video_player_chrome.dart';
 import '../services/desktop_platform.dart';
+
 import 'dart:async';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
+
+import '../widgets/sliding_tab_indicator.dart';
+
 import 'package:flutter_lucide/flutter_lucide.dart';
 import 'package:hive_ce/hive_ce.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -18,18 +22,24 @@ import '../services/backend_transport.dart';
 import '../services/drama_channel_preferences.dart';
 import '../services/drama_mute_preferences.dart';
 import '../services/episode_source_cache.dart';
+import '../services/frame_stats.dart';
+import '../services/shell_visibility.dart';
 import '../services/inline_video_playback.dart';
+import '../services/haptic_preferences.dart';
 
 import '../services/library_store.dart';
 import '../services/native_player.dart';
 import '../services/playback_format.dart';
 import '../services/player_history.dart';
+import '../services/video_catalogue.dart';
 import '../services/player_style_config.dart';
 import '../services/shelf_store.dart';
 import '../services/short_series_font_scale.dart';
 import '../services/swipe_guide_store.dart';
 import '../services/user_facing_error.dart';
 import '../services/media_history_store.dart';
+import '../widgets/drama_pull_refresh_hint.dart';
+import '../widgets/home/classic_home_tab_bar.dart';
 import '../widgets/home/home_design.dart';
 import '../widgets/home/home_media_card.dart';
 import '../widgets/player/playlet_comment_panel.dart';
@@ -204,21 +214,60 @@ DramaChannel? serverChannelOf(ChannelTab tab) {
   }
 }
 
+/// 频道条去重：同一频道在服务端表里出现多次时只留第一条。
+///
+/// `ChannelTable.fromPayload` 对 `tab_item` 是原序透传、不去重的（模型层故意
+/// 忠实反映上游），所以上游重复下发同一个 `tab_type` 时，频道条上就是两个一模
+/// 一样的标签（真机出现过两个「漫剧」）。
+///
+/// 判据用频道**身份**而不是 `serverType`：[serverChannelOf] 本来就把 8 与 4 归成
+/// 同一个 case（看剧），按 serverType 去重会留下两条看剧。可见名字再兜一层：
+/// 两个不同频道顶着同一个 title 时，用户在频道条上分不出谁是谁，留第一条
+/// （官方 `m0` 也是先到先得）。
+List<DramaChannel> dedupeChannels(List<DramaChannel> channels) {
+  final kept = <DramaChannel>[];
+  final identities = <String>{};
+  final labels = <String>{};
+  for (final channel in channels) {
+    final identity =
+        '${channel.source.name}:${channel.tabIndex}:${channel.kind}';
+    final label = channel.label.trim();
+    // 先查后占：如果在这里就 `identities.add`，后面因名字重复被拦下的那条
+    // 会白占一个身份，把同身份的合法频道也一并吞掉（整个频道从频道条上消失）。
+    if (identities.contains(identity) || labels.contains(label)) continue;
+    identities.add(identity);
+    labels.add(label);
+    kept.add(channel);
+  }
+  return kept;
+}
+
 /// 搜索行高度（首页 `fua` 的 51dp）：6dp 上留白 + 36dp 框体 + 9dp 下留白。
 /// 原先沿用 `ap4.xml` 的 38dp，上下只剩 1dp，频道标签几乎贴着搜索框。
 const _dramaSearchRowHeight = 51.0;
 
 /// 频道条基础高度；大字号下由 [_dramaStripHeightFor] 抬高。
-const _dramaStripBaseHeight = 38.0;
+const _dramaStripBaseHeight = ClassicHomeTabBar.barHeight;
 
-/// 频道条在大字号下随选中字号一起长高：24sp 放大后若仍锁死 38dp，会和
-/// 3dp 指示条一起撞破条带。思路同首页 tab 条的 textScale 补偿。
+/// 频道指示条在两个频道之间滑动所需的时间。它比文字动画长，因为指示条要
+/// 走过一段看得见的距离。
+const _dramaIndicatorDuration = Duration(milliseconds: 300);
+
+/// 官方短剧 feed 弹幕区的 top margin（`vq3/j.java` `B0()`）：
+/// 状态栏高度 + 92dp（`videoScene==1` 推荐流；普通 single 为 +80dp）。
+/// `PlayletDanmakuLayer` 内部还从顶部 8dp 起画，合起来正好落在
+/// 搜索行/频道条下方，不会压到状态栏和搜索框。
+const _feedDanmakuTopMargin = 92.0;
+
+/// 频道条与首页共用选中字号和基础高度，大字号下为文字保留 20dp 纵向留白。
 ///
 /// 与 [_dramaSearchRowHeight] 一样放在文件顶层：顶栏是两处（悬浮层本身与
 /// 依赖它的列表留白）共用的布局契约，不该藏在页面 State 里。
 double _dramaStripHeightFor(BuildContext context) {
-  final text = MediaQuery.textScalerOf(context).scale(24) * 1.1 + 6;
-  return text > _dramaStripBaseHeight ? text + 4 : _dramaStripBaseHeight;
+  final height =
+      MediaQuery.textScalerOf(context).scale(ClassicHomeTabBar.selectedSize) +
+      20;
+  return height > _dramaStripBaseHeight ? height : _dramaStripBaseHeight;
 }
 
 /// 悬浮顶栏（搜索行 + 频道条）在状态栏下方占的高度。
@@ -272,7 +321,11 @@ class DramaPage extends ConsumerStatefulWidget {
     this.seriesDetailLoader,
     this.seriesCommentLoader,
     this.bottomInset,
+    this.shellIndex = 1,
   });
+
+  /// 本页在壳层里的下标，用来判断 [shellVisibleTab] 是否指向自己。
+  final int shellIndex;
 
   /// Test seams. The official feed plays the on-screen card inline and still
   /// opens the full player from a tap, which needs the series directory first.
@@ -311,10 +364,15 @@ class DramaPage extends ConsumerStatefulWidget {
   ConsumerState<DramaPage> createState() => _DramaPageState();
 }
 
+/// 桌面端海报格列数：一格 190dp 宽、钳在 3–9 列。
+///
+/// 看剧/漫剧的瀑布格与最近/收藏的双列格共用这一个口径，改动只在这里。
+/// 手机端不走它——那边是官方的固定两列。
+int dramaDesktopColumns(BuildContext context) =>
+    (MediaQuery.sizeOf(context).width / 190).floor().clamp(3, 9);
+
 class _DramaPageState extends ConsumerState<DramaPage>
     with WidgetsBindingObserver {
-  static const _pullRefreshTrigger = 64.0;
-
   /// 顶栏在本页内容上方占的高度：移动端是搜索行 + 频道条两行；桌面端
   /// 不渲染搜索行——分区搜索入口收敛到频道条右端的搜索图标（壳层全局
   /// 搜索在短剧分区也隐藏），只占频道条一行，把垂直空间还给视频/网格。
@@ -327,8 +385,40 @@ class _DramaPageState extends ConsumerState<DramaPage>
     return MediaQuery.paddingOf(context).bottom;
   }
 
-  final PageController _pages = PageController();
+  final Map<int, PageController> _feedControllers = {};
+  final Map<int, int> _screenIndices = {};
+  PageController _pagesFor(int tab) =>
+      _feedControllers.putIfAbsent(tab, PageController.new);
+  PageController get _pages => _pagesFor(_current.tabIndex);
+  bool _channelScrolling = false;
+
+  /// 横滑切频道的看门狗：正常时 [_channelScrolling] 由 pager 的 ScrollEnd
+  /// （走 [_onChannelScroll]）复位；但频道表回包换 key、整个 pager 重建时那
+  /// 一次 ScrollEnd 会丢，闩就永远挡住起播与释放（真机表现为切回推荐不再起播）。
+  /// 兜一道：切频道置闩后排一个「动画时长 + 余量」的定时器，到点若闩还在就当作
+  /// ScrollEnd 丢了、手动放行——与 pager dispose 里补发 onScrollStateChanged(false)
+  /// 同一思路，只不过补的是 DramaPage 这一侧的闩。
+  Timer? _channelScrollingWatchdog;
+  static const Duration _channelScrollingWatchdogDelay = Duration(
+    milliseconds: 500,
+  );
+
+  /// 当前落在频道 pager 上的指针。慢拖超过一次看门狗周期时还不能放闩；
+  /// 指针抬起后若 ScrollEnd 确实丢失，下一次计时才会兜底。
+  final Set<int> _channelPointers = <int>{};
+
   int _channel = 0;
+
+  /// The live horizontal swipe progress, handed from the swipe area to the
+  /// channel strip so the indicator follows the finger.
+  ///
+  /// A notifier rather than a plain field: the strip is rebuilt on every
+  /// frame of the drag, and rebuilding the whole page for that would throw
+  /// away the video feed's state.
+  final ValueNotifier<double> _channelProgress = ValueNotifier<double>(0);
+
+  /// 按 provider 的分类身份保存数据；页面本身由横向 pager 保活。
+  final Map<int, HomeState> _channelStates = {};
   String? _openingId;
 
   /// 最近/收藏频道处于官方编辑模式（`S()`）。官方进编辑时把 SeriesMall 的
@@ -345,7 +435,8 @@ class _DramaPageState extends ConsumerState<DramaPage>
 
   /// Index of the page the viewer is on, the only card that may mount a
   /// texture.
-  int _screenIndex = 0;
+  int get _screenIndex => _screenIndices[_current.tabIndex] ?? 0;
+  set _screenIndex(int value) => _screenIndices[_current.tabIndex] = value;
 
   /// True between the feed's scroll start and end notifications.
   bool _paging = false;
@@ -412,7 +503,9 @@ class _DramaPageState extends ConsumerState<DramaPage>
 
   /// Downward overscroll on the first card, in logical pixels. Official
   /// `aq0.xml` shows 「下拉刷新内容」 (`@string/dhk`) while this is in flight.
-  double _pullDistance = 0;
+  /// A notifier, because the hint follows the drag every frame: a page-wide
+  /// setState per scroll update would rebuild the feed and the grid for it.
+  final ValueNotifier<double> _pullDistance = ValueNotifier(0);
 
   /// 「上滑查看更多视频」guide（官方 `pp3.f` + `cf_.xml`）。官方行为：
   /// **每台设备只弹一次**（SharedPreferences `series_show_user_guide`，
@@ -475,6 +568,8 @@ class _DramaPageState extends ConsumerState<DramaPage>
       DesktopPlatform.fullscreen.addListener(_desktopFullscreenChanged);
     }
     WidgetsBinding.instance.addObserver(this);
+    // 壳层可见性：切走时暂停播放，切回时恢复，但都不触发整页重建。
+    shellVisibleTab.addListener(_syncTickerMode);
     _inline = InlineVideoPlayback(
       directoryLoader: widget.directoryLoader,
       contentLoader: widget.contentLoader,
@@ -531,6 +626,7 @@ class _DramaPageState extends ConsumerState<DramaPage>
       DesktopPlatform.fullscreen.removeListener(_desktopFullscreenChanged);
     }
     WidgetsBinding.instance.removeObserver(this);
+    shellVisibleTab.removeListener(_syncTickerMode);
     _inline.activeVid.removeListener(_onFeedVidChanged);
     _inline.seeked.removeListener(_onFeedSeeked);
     _feedDanmakuTimer?.cancel();
@@ -540,7 +636,12 @@ class _DramaPageState extends ConsumerState<DramaPage>
     _guideFadeIn?.cancel();
     _guideTick?.cancel();
     _guideFadeOut?.cancel();
-    _pages.dispose();
+    _channelScrollingWatchdog?.cancel();
+    _pullDistance.dispose();
+    for (final controller in _feedControllers.values) {
+      controller.dispose();
+    }
+    _channelProgress.dispose();
     super.dispose();
   }
 
@@ -576,11 +677,12 @@ class _DramaPageState extends ConsumerState<DramaPage>
       return;
     }
     if (!mounted) return;
-    final mapped = <DramaChannel>[];
+    final raw = <DramaChannel>[];
     for (final tab in table.tabs) {
       final channel = serverChannelOf(tab);
-      if (channel != null) mapped.add(channel);
+      if (channel != null) raw.add(channel);
     }
+    final mapped = dedupeChannels(raw);
     final isSeriesmallStrip = mapped.any(
       (channel) =>
           channel.serverType == kChannelVideoFeed && channel.label == '推荐',
@@ -614,6 +716,7 @@ class _DramaPageState extends ConsumerState<DramaPage>
       _channels = List.unmodifiable(mapped);
       _channel = index;
       _screenIndex = 0;
+      // 横向 pager 按频道表重建，数据仍按 provider 分类身份隔离。
     });
     // 频道表换了以后，**订阅流也要跟着换**：否则频道条高亮的是新频道，
     // 下面的 feed 还是旧的，两边对不上。这里复用 `_selectChannel` 的同一条
@@ -703,8 +806,13 @@ class _DramaPageState extends ConsumerState<DramaPage>
 
   /// The bottom bar mutes hidden destinations rather than unmounting them, so
   /// the feed has to stop its own playback.
+  ///
+  /// 可见性来自壳层的 [shellVisibleTab]，不再读 `TickerMode`：后者是
+  /// InheritedWidget，一翻转就会让整页 `didChangeDependencies` → 重建，
+  /// 底部切页时那 50–280ms 的 UI 帧主要就是它。
   void _syncTickerMode() {
-    final enabled = TickerMode.valuesOf(context).enabled;
+    final shown = shellVisibleTab.value;
+    final enabled = shown == null || shown == widget.shellIndex;
     if (enabled == _tickerEnabled) return;
     _tickerEnabled = enabled;
     if (enabled) {
@@ -739,7 +847,8 @@ class _DramaPageState extends ConsumerState<DramaPage>
     if (!_current.playsInline) return null;
     final items = _visibleItems(ref.read(dramaProvider));
     if (items.isEmpty) return null;
-    return items[_screenIndex.clamp(0, items.length - 1)];
+    final item = items[_screenIndex.clamp(0, items.length - 1)];
+    return isVideoKind(item.kind) ? item : null;
   }
 
   void _syncInline() {
@@ -748,7 +857,13 @@ class _DramaPageState extends ConsumerState<DramaPage>
     final scrolling =
         _pages.hasClients && _pages.position.isScrollingNotifier.value;
     if (_paging && !scrolling) _paging = false;
-    if (!mounted || !_tickerEnabled || _modalOpen || _paging) return;
+    if (!mounted ||
+        !_tickerEnabled ||
+        _modalOpen ||
+        _paging ||
+        _channelScrolling) {
+      return;
+    }
     // Never start a video under the full page player's loading overlay.
     if (_openingId != null) return;
     final item = _currentItem();
@@ -768,31 +883,85 @@ class _DramaPageState extends ConsumerState<DramaPage>
     }
   }
 
+  void _onChannelScroll(bool scrolling) {
+    if (!mounted) return;
+    // 真正的 ScrollEnd 到了，看门狗不再需要。
+    if (!scrolling) _channelScrollingWatchdog?.cancel();
+    if (_channelScrolling != scrolling) {
+      setState(() => _channelScrolling = scrolling);
+    }
+    if (scrolling) {
+      _hideGuide();
+      unawaited(_inline.pause());
+    } else if (!_current.playsInline) {
+      unawaited(_inline.releaseAll());
+    } else if (_tickerEnabled) {
+      _resumeInline();
+    }
+  }
+
   void _selectChannel(int index) {
     if (index == _channel) return;
+    FrameStats.mark('drama channel $index');
     final channel = _channels[index];
     // 官方横向频道 pager 一滚动就收起引导（`onPageScrolled` → `pp3.f.m()`）；
     // 这里的等价动作是切频道。
     _hideGuide();
     setState(() {
       _channel = index;
-      _screenIndex = 0;
+      _paging = false;
+      _channelScrolling = !MediaQuery.disableAnimationsOf(context);
     });
+    _armChannelScrollingWatchdog();
     // 记住这次选择（官方把 `tab_type` 写回 SP）：下次冷启动直接落在这里。
     final type = channel.serverType;
     if (type != null) unawaited(DramaChannelPreferences.save(type));
-    // 壳层的 dock / 系统导航栏跟着频道换肤（推荐＝深色，浅色页＝画布色）。
-    dramaLightPageNotifier.value = !channel.playsInline;
     // Local channels read this device's own data; switching the provider would
     // silently load a feed nobody asked for.
     if (channel.isFeed) {
       ref.read(dramaProvider.notifier).selectTab(channel.tabIndex);
     }
-    if (!channel.playsInline) {
-      // Grids and local lists have no inline video: free any hidden decoder.
-      unawaited(_inline.releaseAll());
+    // 每个视频频道保留独立的竖向页码，横滑不会把旧控制器跳回第一页。
+    // 下面两件都不影响这一帧的画面（新内容由上面的 setState 重建），却都不
+    // 便宜：换肤会把整壳的重建+毛玻璃切换排在同一帧，释放解码器要跟平台线程
+    // 打交道。挤在切频道那一帧里做，真机上就是「内容换完了、画面还顿一下」。
+    // 挪到帧后：dock 颜色晚一帧、旧播放器晚一帧释放，肉眼看不出来。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || index != _channel) return;
+      // 频道表回包会换 key、整个 pager 重建，这一次切换没有滚动可等：
+      // pager 没挂上就把「横滑中」放下，否则它会一直挡住起播与释放。
+      if (_channelScrolling && !_pages.hasClients) {
+        setState(() => _channelScrolling = false);
+      }
+      dramaLightPageNotifier.value = !channel.playsInline;
+      if (!channel.playsInline && !_channelScrolling) {
+        unawaited(_inline.releaseAll());
+      }
+    });
+  }
+
+  /// 排横滑切频道看门狗：从最近一次频道 pager 活动重新计时。收到 ScrollEnd
+  /// （[_onChannelScroll] false）会取消；若被别的路径（如帧后「pager 没挂上」
+  /// 兜底）先清了闩，定时器到点看到闩已落就自灭，不会重复放行。
+  void _armChannelScrollingWatchdog() {
+    _channelScrollingWatchdog?.cancel();
+    if (!_channelScrolling) return;
+    _channelScrollingWatchdog = Timer(
+      _channelScrollingWatchdogDelay,
+      _onChannelScrollingWatchdog,
+    );
+  }
+
+  void _onChannelScrollingWatchdog() {
+    _channelScrollingWatchdog = null;
+    if (!mounted || !_channelScrolling) return;
+    // 仍在慢拖：继续等用户松手，不能在滚动尚未结束时提前起播。
+    if (_channelPointers.isNotEmpty) {
+      _armChannelScrollingWatchdog();
+      return;
     }
-    if (_pages.hasClients) _pages.jumpToPage(0);
+    // 到点还锁着 = 那一次 ScrollEnd 丢了，手动放行，别让闩永久挡住起播。
+    _onChannelScroll(false);
   }
 
   /// A vertical drag pauses first: the new card may only start after the feed
@@ -806,32 +975,22 @@ class _DramaPageState extends ConsumerState<DramaPage>
     if (notification is OverscrollNotification &&
         _screenIndex == 0 &&
         notification.overscroll < 0) {
-      setState(() {
-        _pullDistance = (_pullDistance - notification.overscroll).clamp(
-          0,
-          _pullRefreshTrigger,
-        );
-      });
+      _pullDistance.value = (_pullDistance.value - notification.overscroll)
+          .clamp(0, kDramaPullRefreshTrigger);
       return false;
     }
     if (notification is ScrollUpdateNotification &&
-        _pullDistance > 0 &&
+        _pullDistance.value > 0 &&
         (notification.scrollDelta ?? 0) > 0) {
-      setState(() {
-        _pullDistance = (_pullDistance - notification.scrollDelta!).clamp(
-          0,
-          _pullRefreshTrigger,
-        );
-      });
+      _pullDistance.value = (_pullDistance.value - notification.scrollDelta!)
+          .clamp(0, kDramaPullRefreshTrigger);
     }
     if (notification is ScrollStartNotification) {
       _paging = true;
       unawaited(_inline.pause());
     } else if (notification is ScrollEndNotification) {
-      final shouldRefresh = _pullDistance >= _pullRefreshTrigger;
-      if (_pullDistance > 0) {
-        setState(() => _pullDistance = 0);
-      }
+      final shouldRefresh = _pullDistance.value >= kDramaPullRefreshTrigger;
+      if (_pullDistance.value > 0) _pullDistance.value = 0;
       if (shouldRefresh) {
         unawaited(_refresh());
       }
@@ -860,10 +1019,12 @@ class _DramaPageState extends ConsumerState<DramaPage>
   /// 全页播放页只由「全屏观看」按钮进入。
   void _togglePlay() {
     final item = _currentItem();
-    if (item == null) return;
+    if (item == null || !isVideoKind(item.kind)) return;
     // A tap while the feed is still settling, a route is on top, or the full
     // page player is loading must not fight the state machine.
-    if (_modalOpen || _paging || _openingId != null) return;
+    if (_modalOpen || _paging || _channelScrolling || _openingId != null) {
+      return;
+    }
     // 用户手动接管播放/暂停：可见性暂停的记账作废。
     _inlineVisibilityPaused = false;
     if (_inline.activeId.value != item.id) {
@@ -884,7 +1045,9 @@ class _DramaPageState extends ConsumerState<DramaPage>
     // 走到这里的续播都不是生命周期可见性恢复（滚动落定、路由返回、tab
     // 回到本页）：可见性记账就此作废，免得陈旧标记日后放行一次假恢复。
     _inlineVisibilityPaused = false;
-    if (_modalOpen || _paging || _openingId != null) return;
+    if (_modalOpen || _paging || _channelScrolling || _openingId != null) {
+      return;
+    }
     if (_currentItem()?.id == _inline.activeId.value) {
       unawaited(_inline.resume());
     } else {
@@ -1361,19 +1524,36 @@ class _DramaPageState extends ConsumerState<DramaPage>
     }
   }
 
+  /// 顶栏后面的装饰背板：浅色沿用官方奶白，深色 / OLED 取画布色，
+  /// 墨水屏纯白（与画布同色，不引入灰阶）。
+  static List<Color> _topBackingColors(HomePalette palette) => [
+    palette.dark
+        ? palette.canvas
+        : (palette.eink ? Colors.white : const Color(0xFFFFF3E6)),
+    palette.dark ? palette.canvas : const Color(0xFFFFFFFF),
+    palette.dark
+        ? palette.canvas.withValues(alpha: 0)
+        : const Color(0x00FFFFFF),
+  ];
+
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(dramaProvider);
     final channel = _current;
-    final items = _visibleItems(state);
+    // 数据快照按分类归属保存，保活页不借用当前频道的数据。
+    if (channel.isFeed && state.tabIndex == channel.tabIndex) {
+      _channelStates[channel.tabIndex] = state;
+    }
     // 浅色页（看剧/漫剧/最近/收藏）跟随外观色板：深色 / OLED 下不能再用
     // 白底深字，否则整页和主题完全脱节。视频流仍固定黑底。
     final palette = HomePalette.of(context);
     _syncTickerMode();
     _scheduleInlineSync();
-    // 官方看剧(8, CommonDoubleRow 两列)与漫剧(24, CommonThreeRow 三列)频道
-    // 都是浅色海报瀑布格（StaggeredFeedTab）；最近/收藏列表也是浅色页；
-    // 只有推荐(16)等视频流频道是黑底竖滑播放。状态栏图标亮度跟着页面走。
+    // 官方看剧(8, CommonDoubleRow)是两列、漫剧(24, CommonThreeRow)是三列；本仓库
+    // 竖屏统一按三列渲染（`083b9f8 refactor(layout): 竖屏统一三列`，列数见
+    // [_gridShape]），所以这里两种频道都只是浅色海报瀑布格（StaggeredFeedTab）。
+    // 最近/收藏列表也是浅色页；只有推荐(16)等视频流频道是黑底竖滑播放。状态栏
+    // 图标亮度跟着页面走。
     final isVideoFlow = channel.playsInline;
     final lightPage = !isVideoFlow;
     return AnnotatedRegion<SystemUiOverlayStyle>(
@@ -1405,63 +1585,76 @@ class _DramaPageState extends ConsumerState<DramaPage>
               // from the account, so neither is a video feed here either.
               // 看剧/漫剧是浅色海报瀑布格（官方 StaggeredFeedTab，
               // `client_template` 12/13），只有推荐走全屏竖滑播放流。
-              child: TabSwipeArea(
-                index: _channel,
-                count: _channels.length,
-                onSelect: _selectChannel,
-                // 播放器打开、弹窗、最近频道编辑时都不该被横滑打断。
-                enabled: !_modalOpen && _openingId == null && !_recentEditing,
-                // 整片横滑都切频道，播放流也一样。唯一的例外是底部进度条：
-                // 它自己带横向拖动、又比这里内层，所以只有那 24dp 归调进度，
-                // 其余区域一律切频道（见 TabSwipeArea 的类文档）。
-                // 只让内容跟手横移：频道条固定在顶部，切换后立刻显示新的
-                // 选中项，不被动画拖着走。
-                child: switch (channel) {
-                DramaChannel(source: DramaChannelSource.feed, kind: 'manju') =>
-                  _browseGrid(
-                    state,
-                    items,
-                    columns: 3,
-                    gridKey: 'drama_manju_grid',
-                    titleMaxLines: 1,
+              child: Listener(
+                behavior: HitTestBehavior.translucent,
+                onPointerDown: (event) {
+                  _channelPointers.add(event.pointer);
+                },
+                onPointerUp: (event) {
+                  _channelPointers.remove(event.pointer);
+                },
+                onPointerCancel: (event) {
+                  _channelPointers.remove(event.pointer);
+                },
+                child: TabSwipeArea.pages(
+                  key: ValueKey(
+                    _channels
+                        .map((c) => '${c.serverType}:${c.source}')
+                        .join(','),
                   ),
-                DramaChannel(
-                  source: DramaChannelSource.feed,
-                  serverType: kChannelVideoEpisode,
-                ) =>
-                  _browseGrid(
-                    state,
-                    items,
-                    columns: 2,
-                    gridKey: 'drama_episode_grid',
-                    titleMaxLines: 2,
-                  ),
-                DramaChannel(source: DramaChannelSource.feed) => _feed(
-                  state,
-                  items,
-                ),
-                _ => _LocalList(
-                  channel: channel,
-                  // 官方最近/收藏卡点击都直接进播放页续播，不经过详情页。
-                  onOpen: _openDetail,
-                  onPlay: _openPlayer,
-                  onFind: () => _selectChannel(0),
-                  onEditingChanged: (editing) {
-                    if (mounted) setState(() => _recentEditing = editing);
+                  index: _channel,
+                  count: _channels.length,
+                  onSelect: _selectChannel,
+                  onProgress: (value) {
+                    if (_channelScrolling) _armChannelScrollingWatchdog();
+                    if (_channelProgress.value != value) {
+                      _channelProgress.value = value;
+                    }
+                  },
+                  // 拖动时把邻页真的画出来。短剧的顶栏本来就在滑动区外面（不会被
+                  // 遮），但内容移开后那一侧原本只剩页面底色——深色视频频道下就是一
+                  // 块黑面板，和首页修掉的是同一个观感问题。
+                  onScrollStateChanged: _onChannelScroll,
+                  // 播放器打开、弹窗、最近频道编辑时都不该被横滑打断。
+                  enabled: !_modalOpen && _openingId == null && !_recentEditing,
+                  // 整片横滑都切频道，播放流也一样。唯一的例外是底部进度条：
+                  // 它自己带横向拖动、又比这里内层，所以只有那 24dp 归调进度，
+                  // 其余区域一律切频道（见 TabSwipeArea 的类文档）。
+                  // 只让内容跟手横移：频道条固定在顶部，切换后立刻显示新的
+                  // 选中项，不被动画拖着走。
+                  pageBuilder: (context, target) {
+                    final targetChannel = _channels[target];
+                    final targetState = target == _channel
+                        ? state
+                        : _channelStates[targetChannel.tabIndex] ??
+                              HomeState(tabIndex: targetChannel.tabIndex);
+                    return ColoredBox(
+                      color: targetChannel.playsInline
+                          ? Colors.black
+                          : HomePalette.of(context).canvas,
+                      child: _channelBody(
+                        target,
+                        targetChannel,
+                        targetState,
+                        targetState.items
+                            .where((item) => item.kind == targetChannel.kind)
+                            .toList(growable: false),
+                        active: target == _channel,
+                      ),
+                    );
                   },
                 ),
-                },
               ),
             ),
-            if (_pullDistance > 0)              Positioned(
-                top: MediaQuery.paddingOf(context).top + _topChromeHeight + 8,
-                left: 0,
-                right: 0,
-                child: _PullRefreshHint(
-                  armed: _pullDistance >= _pullRefreshTrigger,
-                  color: lightPage ? palette.ink : Colors.white,
-                ),
+            Positioned(
+              top: MediaQuery.paddingOf(context).top + _topChromeHeight + 8,
+              left: 0,
+              right: 0,
+              child: DramaPullRefreshHint(
+                distance: _pullDistance,
+                color: lightPage ? palette.ink : Colors.white,
               ),
+            ),
             // 浅色页的顶栏背板：官方上滑时卡片从一条奶白渐变后面穿过，
             // 搜索框/频道条不会和海报叠在一起（黑页保持透明压在视频上）。
             // 最近频道进编辑后与官方一致：顶栏整个隐藏（`af()` gone）。
@@ -1484,17 +1677,7 @@ class _DramaPageState extends ConsumerState<DramaPage>
                           end: Alignment.bottomCenter,
                           // 浅色支沿用官方奶白渐变；深色 / OLED 取当前画布色
                           // 淡出，只负责把海报挡在顶栏后。
-                          colors: [
-                            palette.dark
-                                ? palette.canvas
-                                : const Color(0xFFFFF3E6),
-                            palette.dark
-                                ? palette.canvas
-                                : const Color(0xFFFFFFFF),
-                            palette.dark
-                                ? palette.canvas.withValues(alpha: 0)
-                                : const Color(0x00FFFFFF),
-                          ],
+                          colors: _topBackingColors(palette),
                           stops: const [0.0, 0.5, 1.0],
                         ),
                       ),
@@ -1512,15 +1695,24 @@ class _DramaPageState extends ConsumerState<DramaPage>
                 top: 0,
                 left: 0,
                 right: 0,
-                child: _TopBar(
-                  channels: _channels,
-                  selected: _channel,
-                  onSelect: _selectChannel,
-                  onSearch: _openSearch,
-                  // 占位文案跟着频道语境走：漫剧频道搜漫剧，其余搜短剧。
-                  hint: _current.kind == 'manju' ? '请输入漫剧名或主演名' : '请输入短剧名或主演名',
-                  // 官方浅色页（看剧/漫剧）的顶栏换浅肤：深色字 + 浅灰搜索框。
-                  light: lightPage,
+                child: ValueListenableBuilder<double>(
+                  valueListenable: _channelProgress,
+                  builder: (context, progress, _) => _TopBar(
+                    channels: _channels,
+                    selected: _channel,
+                    onSelect: _selectChannel,
+                    onSearch: _openSearch,
+                    // 占位文案跟着频道语境走：漫剧频道搜漫剧，其余搜短剧。
+                    hint: _current.kind == 'manju'
+                        ? '请输入漫剧名或主演名'
+                        : '请输入短剧名或主演名',
+                    // 官方浅色页（看剧/漫剧）的顶栏换浅肤：深色字 + 浅灰搜索框。
+                    light: lightPage,
+                    // The strip lives outside the swipe area, so it cannot see
+                    // the drag offset; this is how the indicator follows the
+                    // finger.
+                    progress: progress,
+                  ),
                 ),
               ),
             // 「上滑查看更多视频」：官方挂在全屏容器上、`gravity=bottom|center`
@@ -1541,8 +1733,77 @@ class _DramaPageState extends ConsumerState<DramaPage>
     );
   }
 
+  /// 频道的瀑布格形状（列数 / gridKey / 片名行数）；不是瀑布格返回 null。
+  ///
+  /// 保活页面统一从这里读取形状，不再为邻页另画一份卡片副本。
+  ({int columns, String gridKey, int titleMaxLines})? _gridShape(
+    DramaChannel channel,
+  ) {
+    if (channel.source != DramaChannelSource.feed) return null;
+    if (channel.kind == 'manju') {
+      return (columns: 3, gridKey: 'drama_manju_grid', titleMaxLines: 1);
+    }
+    if (channel.serverType == kChannelVideoEpisode) {
+      return (columns: 3, gridKey: 'drama_episode_grid', titleMaxLines: 2);
+    }
+    return null;
+  }
+
+  /// 每个频道只有一棵真实内容树，隐藏页不能请求分页或激活播放器。
+  Widget _channelBody(
+    int index,
+    DramaChannel channel,
+    HomeState state,
+    List<MediaItem> items, {
+    required bool active,
+  }) {
+    final grid = _gridShape(channel);
+    if (grid != null) {
+      return _browseGrid(
+        state,
+        items,
+        columns: grid.columns,
+        gridKey: grid.gridKey,
+        titleMaxLines: grid.titleMaxLines,
+        active: active,
+      );
+    }
+    if (channel.source == DramaChannelSource.feed) {
+      return _feed(state, items, channel: channel, active: active);
+    }
+    return _LocalList(
+      channel: channel,
+      // 官方最近/收藏卡点击都直接进播放页续播，不经过详情页。
+      onOpen: _openDetail,
+      onPlay: _openPlayer,
+      onFind: () => _selectChannel(0),
+      onEditingChanged: (editing) {
+        if (mounted && active) setState(() => _recentEditing = editing);
+      },
+    );
+  }
+
+  /// 视频流频道的预览：只铺首集海报，不起播放器、不挂弹幕层。
+  Widget _previewFeedPoster(MediaItem item) {
+    return Padding(
+      padding: EdgeInsets.only(
+        top: MediaQuery.paddingOf(context).top + _topChromeHeight,
+      ),
+      child: LayoutBuilder(
+        builder: (context, constraints) => StoryCover(
+          item: item,
+          cacheWidth:
+              (constraints.maxWidth * MediaQuery.devicePixelRatioOf(context))
+                  .ceil(),
+          alignment: Alignment.center,
+        ),
+      ),
+    );
+  }
+
   /// 官方瀑布格频道（StaggeredFeedTab）：漫剧 = `client_template` 13
-  /// CommonThreeRow 三列；看剧 = 12 CommonDoubleRow 两列。浅色页，卡 =
+  /// CommonThreeRow 三列；看剧 = 12 CommonDoubleRow 两列。本仓库竖屏把两者统一
+  /// 成三列渲染（列数由 [_gridShape] 给出，见 `083b9f8`）。浅色页，卡 =
   /// 竖版海报 + 片名 + 「分类·集数」，点击直接进播放页（官方
   /// `cv2/c.java:371-376` → `openShortSeriesActivity` → 沉浸播放器）。
   /// 看剧官方副标题带「N万热度」，数据在第二段卡里才有，v1 先用分类·集数。
@@ -1552,6 +1813,7 @@ class _DramaPageState extends ConsumerState<DramaPage>
     required int columns,
     required String gridKey,
     required int titleMaxLines,
+    required bool active,
   }) {
     if (state.error != null) {
       return _FeedMessage(
@@ -1567,17 +1829,21 @@ class _DramaPageState extends ConsumerState<DramaPage>
       }
       return _GridMessage(key: Key('$gridKey.empty'), message: '暂无内容');
     }
-    if (isWindowsDesktop) {
-      columns = (MediaQuery.sizeOf(context).width / 190).floor().clamp(3, 9);
+    final wide = isWindowsDesktop || MediaQuery.sizeOf(context).width >= 840;
+    if (wide) {
+      columns = dramaDesktopColumns(context);
     }
     final bottomInset = _effectiveBottomInset(context);
     return NotificationListener<ScrollNotification>(
-      onNotification: _onGridScroll,
+      onNotification: (notification) =>
+          active ? _onGridScroll(notification) : false,
       child: GridView.builder(
         key: Key(gridKey),
         padding: EdgeInsets.fromLTRB(
           12,
-          MediaQuery.paddingOf(context).top + _topChromeHeight + 12,
+          // 频道条底边到第一行海报的距离：只留 12 时条带和封面几乎贴在一起，
+          // 与首页「标签条 → 内容」的 16 对齐。
+          MediaQuery.paddingOf(context).top + _topChromeHeight + 16,
           12,
           bottomInset + 20,
         ),
@@ -1586,11 +1852,11 @@ class _DramaPageState extends ConsumerState<DramaPage>
           crossAxisSpacing: 8,
           mainAxisSpacing: 16,
           // 海报约 5:7 + 片名 + 「分类·集数」；两列格片名可占两行。
-          childAspectRatio: isWindowsDesktop
+          childAspectRatio: wide
               ? .58
               : columns == 2
               ? 0.56
-              : 0.52,
+              : (titleMaxLines >= 2 ? 0.47 : 0.52),
         ),
         itemCount: items.length,
         itemBuilder: (context, index) => _BrowseCard(
@@ -1611,29 +1877,19 @@ class _DramaPageState extends ConsumerState<DramaPage>
   bool _onGridScroll(ScrollNotification notification) {
     if (notification.depth != 0) return false;
     if (notification is OverscrollNotification && notification.overscroll < 0) {
-      setState(() {
-        _pullDistance = (_pullDistance - notification.overscroll).clamp(
-          0,
-          _pullRefreshTrigger,
-        );
-      });
+      _pullDistance.value = (_pullDistance.value - notification.overscroll)
+          .clamp(0, kDramaPullRefreshTrigger);
       return false;
     }
     if (notification is ScrollUpdateNotification &&
-        _pullDistance > 0 &&
+        _pullDistance.value > 0 &&
         (notification.scrollDelta ?? 0) > 0) {
-      setState(() {
-        _pullDistance = (_pullDistance - notification.scrollDelta!).clamp(
-          0,
-          _pullRefreshTrigger,
-        );
-      });
+      _pullDistance.value = (_pullDistance.value - notification.scrollDelta!)
+          .clamp(0, kDramaPullRefreshTrigger);
     }
     if (notification is ScrollEndNotification) {
-      final shouldRefresh = _pullDistance >= _pullRefreshTrigger;
-      if (_pullDistance > 0) {
-        setState(() => _pullDistance = 0);
-      }
+      final shouldRefresh = _pullDistance.value >= kDramaPullRefreshTrigger;
+      if (_pullDistance.value > 0) _pullDistance.value = 0;
       if (shouldRefresh) {
         unawaited(_refresh());
         return false;
@@ -1646,9 +1902,21 @@ class _DramaPageState extends ConsumerState<DramaPage>
     return false;
   }
 
-  Widget _feed(HomeState state, List<MediaItem> items) {
+  Widget _feed(
+    HomeState state,
+    List<MediaItem> items, {
+    required DramaChannel channel,
+    required bool active,
+  }) {
     if (isWindowsDesktop && state.error == null && items.isNotEmpty) {
-      return _desktopFeed(items);
+      return active
+          ? _desktopFeed(items)
+          : _previewFeedPoster(
+              items[(_screenIndices[channel.tabIndex] ?? 0).clamp(
+                0,
+                items.length - 1,
+              )],
+            );
     }
     if (state.error != null) {
       return _FeedMessage(
@@ -1670,10 +1938,11 @@ class _DramaPageState extends ConsumerState<DramaPage>
     }
 
     return NotificationListener<ScrollNotification>(
-      onNotification: _onFeedScroll,
+      onNotification: (notification) =>
+          active ? _onFeedScroll(notification) : false,
       child: PageView.builder(
         key: const Key('drama_feed'),
-        controller: _pages,
+        controller: _pagesFor(channel.tabIndex),
         scrollDirection: Axis.vertical,
         // 官方翻页物理：fling 沿方向翻一页、恒速 1600px/s 吸附（100ms/英寸）。
         // 默认 PageScrollPhysics 的弹簧收尾起步猛、收尾硬。
@@ -1682,6 +1951,7 @@ class _DramaPageState extends ConsumerState<DramaPage>
         physics: const SeriesPagerScrollPhysics(),
         itemCount: items.length,
         onPageChanged: (index) {
+          if (!active) return;
           // The page that owns the texture is decided by `_screenIndex`, so it
           // has to go through setState: without it the card list is never
           // rebuilt, `video` stays on the first page and every page after it
@@ -1707,7 +1977,10 @@ class _DramaPageState extends ConsumerState<DramaPage>
           final item = items[index];
           // Only the card on screen may own a texture. The layer itself waits
           // for this drama to be the session's target.
-          final onScreen = index == _screenIndex;
+          final onScreen =
+              active &&
+              !_channelScrolling &&
+              index == (_screenIndices[channel.tabIndex] ?? 0);
           // 官方在 holder 绑定时拉热评；这里只在剧首次上屏时请求一次。
           if (onScreen) unawaited(_loadFeedHotComments(item));
           return _DramaFeedCard(
@@ -1926,6 +2199,13 @@ class _DramaPageState extends ConsumerState<DramaPage>
     /// `ShortSeriesLandActivity`（`jq3/x.java:4499-4538`）。
     bool openFullScreen = false,
   }) async {
+    if (!isVideoKind(item.kind)) {
+      // A non-video card can only reach here through a stale/misclassified
+      // feed. Open its detail instead of asking the video endpoint for a
+      // stream that cannot exist.
+      if (mounted) _openDetail(item);
+      return;
+    }
     if (_openingId != null) return;
     setState(() => _openingId = item.id);
     // The full page player creates its own native instance, so the inline one
@@ -1941,24 +2221,15 @@ class _DramaPageState extends ConsumerState<DramaPage>
       final loader = widget.directoryLoader;
       // `tab` is a named parameter of the client, so the real call passes it by
       // name; a positional tear-off would degrade into a dynamic call.
-      var volumes = loadedEpisodes != null
-          ? [loadedEpisodes]
-          : loader != null
-          ? await loader(contentId, tab)
-          : await ApiClient.instance.directoryChapters(contentId, tab: tab);
-      if (volumes.isEmpty && item.episodeId != null) {
-        // A search result can be a single episode rather than a whole series.
-        volumes = [
-          [
-            Chapter(
-              itemId: item.episodeId!,
-              title: item.title,
-              volumeName: '剧集',
-            ),
-          ],
-        ];
-      }
-      final eps = volumes.expand((volume) => volume).toList(growable: false);
+      final eps =
+          loadedEpisodes ??
+          await loadVideoCatalogue(
+            seriesId: contentId,
+            tab: tab,
+            episodeId: item.episodeId,
+            title: item.title,
+            loader: loader == null ? null : () => loader(contentId, tab),
+          );
       if (eps.isEmpty) throw const ApiException('剧集列表暂时无法加载');
       final saved = await PlayerHistory(
         widget.historyStore ?? LibraryStore.instance,
@@ -2057,6 +2328,10 @@ class _DramaPageState extends ConsumerState<DramaPage>
   }
 
   void _openQuickCatalog(MediaItem item) {
+    if (!isVideoKind(item.kind)) {
+      if (mounted) _openDetail(item);
+      return;
+    }
     if (_modalOpen || _openingId != null) return;
     PlayletQuickCatalogSheet.show(
       context,
@@ -2096,7 +2371,8 @@ class _DramaPageState extends ConsumerState<DramaPage>
       _pushOverFeed(
         () => Navigator.push(
           context,
-          MaterialPageRoute<void>(
+          SearchRoute.open<void>(
+            context,
             builder: (_) =>
                 widget.searchPageBuilder?.call(category) ??
                 SearchPage(initialCategory: category),
@@ -2107,8 +2383,7 @@ class _DramaPageState extends ConsumerState<DramaPage>
   }
 }
 
-/// The floating top bar: a 51dp search row over a 38dp channel strip, both on a
-/// light scrim so the official black-on-white text stays readable over video.
+/// 悬浮顶栏：51dp 搜索行与自适应高度频道条；视频流上透明、文字随页面配色。
 class _TopBar extends StatefulWidget {
   final List<DramaChannel> channels;
   final int selected;
@@ -2122,6 +2397,12 @@ class _TopBar extends StatefulWidget {
   /// 黑底视频流的浅色字顶栏（书城/短剧语境）。
   final bool light;
 
+  /// The live horizontal swipe progress: -1 is the previous channel, 0 the
+  /// current one, 1 the next one. The strip lives outside the swipe area, so
+  /// it cannot read the drag offset itself; this is the channel that hands
+  /// it over.
+  final double? progress;
+
   const _TopBar({
     required this.channels,
     required this.selected,
@@ -2129,10 +2410,20 @@ class _TopBar extends StatefulWidget {
     required this.onSearch,
     required this.hint,
     this.light = false,
+    this.progress,
   });
 
   @override
   State<_TopBar> createState() => _TopBarState();
+}
+
+/// 根据同一帧索引和进度计算出的指示条中心及宽度。
+@immutable
+class _IndicatorGeometry {
+  const _IndicatorGeometry({required this.centre, required this.width});
+
+  final double centre;
+  final double width;
 }
 
 class _TopBarState extends State<_TopBar> {
@@ -2143,6 +2434,18 @@ class _TopBarState extends State<_TopBar> {
   /// 每个标签的定位锚点，「把选中项滚进视口」靠它取位置。
   List<GlobalKey> _tabKeys = const [];
 
+  /// 频道条内容（Stack）的锚点：把标签的屏幕坐标换算成内容坐标，用来判断
+  /// 它是否已经完整在视口里（见 [_revealSelected]）。
+  final GlobalKey _contentKey = GlobalKey();
+
+  /// 根据预留宽度计算的标签中心（频道条内容坐标），不依赖帧后测量。
+  List<double> _tabCentres = const [];
+
+  /// 每个频道 tab 的预留宽度（首页选中态字体 + padding × 2）。
+  /// 缓存后 build 阶段不再为每个 tab 创建/销毁 TextPainter。
+  List<double> _reservedWidths = const [];
+  double? _stripViewport;
+
   @override
   void initState() {
     super.initState();
@@ -2152,11 +2455,31 @@ class _TopBarState extends State<_TopBar> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // 预留宽度要读 MediaQuery.textScalerOf 和 Directionality，两者都是
+    // inherited 依赖，只能在 didChangeDependencies 及之后读；放在 initState
+    // 会直接抛「dependOnInheritedWidgetOfExactType was called before
+    // initState completed」。字体缩放变化时这里会重新量，并重排下划线。
+    _recomputeReservedWidths();
+    _revealSelected(animate: false);
+  }
+
+  @override
   void didUpdateWidget(covariant _TopBar oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // 服务端频道表替换本地表时条数会变，锚点跟着重建。
-    if (oldWidget.channels.length != widget.channels.length) _syncTabKeys();
-    if (oldWidget.selected != widget.selected) {
+    // 同数量的频道也可能被改名，测量缓存必须随标签内容更新。
+    final labelsChanged =
+        oldWidget.channels.length != widget.channels.length ||
+        Iterable<int>.generate(widget.channels.length).any(
+          (index) =>
+              oldWidget.channels[index].label != widget.channels[index].label,
+        );
+    if (labelsChanged) {
+      _syncTabKeys();
+      _recomputeReservedWidths();
+    }
+    if (labelsChanged || oldWidget.selected != widget.selected) {
       _revealSelected(animate: !MediaQuery.disableAnimationsOf(context));
     }
   }
@@ -2171,7 +2494,129 @@ class _TopBarState extends State<_TopBar> {
     _tabKeys = syncChannelTabKeys(_tabKeys, widget.channels.length);
   }
 
-  /// 把选中标签居中滚进视口。
+  /// Compute reserved widths for every channel tab.
+  ///
+  /// Measured once per channel-list change (selected 17sp typography +
+  /// 6dp padding on each side, same as the home tab bar), so the Row geometry
+  /// never re-flows on selection changes.
+  void _recomputeReservedWidths() {
+    final count = widget.channels.length;
+    if (count == 0) {
+      _reservedWidths = const [];
+      _tabCentres = const [];
+      return;
+    }
+    final scaler = MediaQuery.textScalerOf(context);
+    final direction = Directionality.of(context);
+    final style = const TextStyle(
+      fontSize: _ChannelTab._selectedSize,
+      height: 1,
+      fontWeight: FontWeight.w700,
+    );
+    _reservedWidths = <double>[
+      for (final channel in widget.channels)
+        SlidingTabStrip.labelWidth(
+          label: channel.label,
+          style: style,
+          textDirection: direction,
+          scaler: scaler,
+          horizontalPadding: _ChannelTab._labelPadding * 2,
+        ),
+    ];
+  }
+
+  /// 手机端放得下时均分可用宽度；窄屏、大字号仍使用自然宽度横向滚动。
+  Widget _buildChannelStrip(BuildContext context, BoxConstraints constraints) {
+    final count = _reservedWidths.length;
+    final available = constraints.maxWidth - ClassicHomeTabBar.sidePadding * 2;
+    final cellWidth = count == 0 ? 0.0 : available / count;
+    final spread =
+        !isWindowsDesktop &&
+        cellWidth.isFinite &&
+        cellWidth > 0 &&
+        _reservedWidths.every((width) => width <= cellWidth);
+    final widths = spread
+        ? List<double>.filled(count, cellWidth)
+        : _reservedWidths;
+    final gap = spread ? 0.0 : ClassicHomeTabBar.tabSpacing;
+    // 标签和下划线使用同一帧的布局宽度；选中字号变化不会移动中心。
+    _tabCentres = SlidingTabStrip.centres(widths, gap: gap);
+    if (_stripViewport != constraints.maxWidth) {
+      _stripViewport = constraints.maxWidth;
+      _revealSelected(animate: false);
+    }
+    return SingleChildScrollView(
+      key: const Key('drama_channel_strip'),
+      controller: _strip,
+      scrollDirection: Axis.horizontal,
+      padding: const EdgeInsets.symmetric(
+        horizontal: ClassicHomeTabBar.sidePadding,
+      ),
+      child: Stack(
+        key: _contentKey,
+        children: [
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (var index = 0; index < count; index++) ...[
+                if (index > 0) SizedBox(width: gap),
+                _ChannelTab(
+                  key: _tabKeys[index],
+                  label: widget.channels[index].label,
+                  selected: index == widget.selected,
+                  light: widget.light,
+                  width: widths[index],
+                  onTap: () => widget.onSelect(index),
+                ),
+              ],
+            ],
+          ),
+          _buildIndicator(context),
+        ],
+      ),
+    );
+  }
+
+  /// The floating channel position: the selected one plus the swipe progress.
+  double _floatingChannel() => SlidingTabStrip.position(
+    index: widget.selected,
+    progress: widget.progress ?? 0,
+    count: widget.channels.length,
+  );
+
+  /// 在 build 中直接计算几何，避免帧后快照与实时进度错开一帧。
+  _IndicatorGeometry? _indicatorAt() {
+    if (_tabCentres.isEmpty || widget.channels.isEmpty) return null;
+    final position = _floatingChannel();
+    final width = _indicatorWidthAt(position);
+    final left = SlidingTabStrip.indicatorLeft(
+      centres: _tabCentres,
+      position: position,
+      indicatorWidth: width,
+    );
+    return _IndicatorGeometry(centre: left + width / 2, width: width);
+  }
+
+  /// The indicator width at the floating [position].
+  ///
+  /// Scales with the reserved tab widths so longer labels (e.g. 漫剧) get
+  /// a proportionally longer underline. Lerp smoothly between tabs.
+  double _indicatorWidthAt(double position) {
+    if (_reservedWidths.isEmpty) return _indicatorMinWidth;
+    return SlidingTabStrip.indicatorWidth(
+      widths: _reservedWidths,
+      position: position,
+      ratio: 0.5,
+      min: _indicatorMinWidth,
+      max: _indicatorMaxWidth,
+    );
+  }
+
+  /// Indicator width bounds; the actual width lerps between tabs.
+  static const double _indicatorMinWidth = 18;
+  static const double _indicatorMaxWidth = 36;
+
+  /// 选中标签未完整可见时，将其居中滚进视口。
   ///
   /// `ensureVisible` 作用于最近的一层 Scrollable —— 频道条自己，不会带动
   /// 下面的 feed；减少动画（无障碍）时不动画，直接跳位。
@@ -2182,6 +2627,22 @@ class _TopBarState extends State<_TopBar> {
       if (index < 0 || index >= _tabKeys.length) return;
       final target = _tabKeys[index].currentContext;
       if (target == null) return;
+      // 已经完整可见就不要为了「居中」再滚一次：滚动和下划线是两段独立的
+      // 动画，叠加起来屏幕上的下划线会先冲过目标、再被滚动带回来，看起来
+      // 就是落位后又「弹一下」。
+      final tabBox = target.findRenderObject() as RenderBox?;
+      final content = _contentKey.currentContext?.findRenderObject();
+      if (tabBox == null || content is! RenderBox || !_strip.hasClients) {
+        return;
+      }
+      final tabLeft =
+          ClassicHomeTabBar.sidePadding +
+          tabBox.localToGlobal(Offset.zero, ancestor: content).dx;
+      final tabRight = tabLeft + tabBox.size.width;
+      final position = _strip.position;
+      final viewStart = position.pixels;
+      final viewEnd = viewStart + position.viewportDimension;
+      if (tabLeft >= viewStart && tabRight <= viewEnd) return;
       Scrollable.ensureVisible(
         target,
         alignment: 0.5,
@@ -2226,29 +2687,7 @@ class _TopBarState extends State<_TopBar> {
                 Expanded(
                   // 只有五个标签，不用 ListView.builder：定位锚点必须随时
                   // 拿到 context，不能有还没建出来的标签。
-                  child: SingleChildScrollView(
-                    key: const Key('drama_channel_strip'),
-                    controller: _strip,
-                    scrollDirection: Axis.horizontal,
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        for (
-                          var index = 0;
-                          index < widget.channels.length;
-                          index++
-                        )
-                          _ChannelTab(
-                            key: _tabKeys[index],
-                            label: widget.channels[index].label,
-                            selected: index == widget.selected,
-                            light: widget.light,
-                            onTap: () => widget.onSelect(index),
-                          ),
-                      ],
-                    ),
-                  ),
+                  child: LayoutBuilder(builder: _buildChannelStrip),
                 ),
                 // 官方 `ap3.xml` 的 `@id/h4f` 是 20dp 搜索钮，但手机端顶部
                 // 已有整条搜索框，两处入口重复（2026-10-25 用户要求移除）。
@@ -2277,6 +2716,34 @@ class _TopBarState extends State<_TopBar> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildIndicator(BuildContext context) {
+    final geometry = _indicatorAt();
+    if (geometry == null) return const SizedBox.shrink();
+    final palette = HomePalette.of(context);
+    final motionless = palette.eink || MediaQuery.disableAnimationsOf(context);
+    final following = (widget.progress ?? 0) != 0;
+    return AnimatedPositioned(
+      key: const Key('drama_channel_indicator'),
+      left: geometry.centre - geometry.width / 2,
+      // 与首页标签条同一个下缘留白：下划线贴着文字下面，不悬在条带底边。
+      bottom: ClassicHomeTabBar.indicatorBottomGap,
+      width: geometry.width,
+      height: 3,
+      duration: following || motionless
+          ? Duration.zero
+          : _dramaIndicatorDuration,
+      curve: Curves.easeOutCubic,
+      child: Container(
+        decoration: BoxDecoration(
+          color: widget.light && !palette.dark
+              ? const Color(0xFF1B1B1B)
+              : Colors.white,
+          borderRadius: BorderRadius.circular(2),
+        ),
       ),
     );
   }
@@ -2336,20 +2803,19 @@ class _TopBarState extends State<_TopBar> {
   }
 }
 
-/// One tab of the channel strip: an animated 16→24sp label over a 3dp
-/// indicator.
-///
-/// 字号档位与切换动画移植自首页 tab 条（选中 24sp、未选中 16sp，
-/// `AnimatedDefaultTextStyle` 180ms easeOutCubic），比官方短剧条的固定
-/// 18sp 更有选中感（用户 2026-10-25 要求）。
+/// 频道标签采用首页 17/15sp 字号和 180ms easeOutCubic 文字动画，无选中背景。
 ///
 /// The strip floats over the video feed (`ap4.xml` 根背景 @null)，文字用白色系：
 /// 选中纯白加粗、未选中半透明白（官方 `app:aui/avn` 指向的
 /// `skin_color_black_light` 是皮肤资源，截图里短剧 feed 上呈现为深色背景上
 /// 的白字，与皮肤暗色变体一致）。
 class _ChannelTab extends StatelessWidget {
-  static const _selectedSize = 24.0;
-  static const _unselectedSize = 16.0;
+  // 与首页 `ClassicHomeTabBar` 同一套排版：17/15sp、w700/w500、行高 1、
+  // 左右各 6dp。首页那层会跟着滑动的选中背景块**不搬过来**——短剧频道条
+  // 压在视频上，块状底色会切出一条硬边。
+  static const _selectedSize = ClassicHomeTabBar.selectedSize;
+  static const _unselectedSize = ClassicHomeTabBar.unselectedSize;
+  static const _labelPadding = ClassicHomeTabBar.labelPadding;
 
   final String label;
   final bool selected;
@@ -2358,11 +2824,15 @@ class _ChannelTab extends StatelessWidget {
   /// 浅色页（漫剧）的深色文字变体，见 [_TopBar.light]。
   final bool light;
 
+  /// 按选中字体预留固定宽度，文字缩放时保持标签中心不变。
+  final double width;
+
   const _ChannelTab({
     super.key,
     required this.label,
     required this.selected,
     required this.onTap,
+    required this.width,
     this.light = false,
   });
 
@@ -2390,40 +2860,36 @@ class _ChannelTab extends StatelessWidget {
           onTap: onTap,
           // 点击水波也走圆角：方角高亮压在浅色页上像一块硬阴影。
           borderRadius: BorderRadius.circular(12),
-          // 官方 `ap3.xml`：tab 内边距 `app:avb` = 16dp（TabCompress 开）／20dp（关），
-          // 文字 18sp（`app:avq`/`app:av5`）。这里取压缩态 16dp；字号按
-          // 用户要求换成首页的 24/16 两档。
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                AnimatedDefaultTextStyle(
-                  duration: duration,
-                  curve: Curves.easeOutCubic,
-                  style: TextStyle(
-                    fontSize: selected ? _selectedSize : _unselectedSize,
-                    height: 1.1,
-                    fontWeight: selected ? FontWeight.w700 : FontWeight.w400,
-                    color: selected ? selectedColor : unselectedColor,
+          // 内边距与预留宽度使用同一套首页排版常量。
+          child: SizedBox(
+            width: width,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: _labelPadding),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  // The label is centred in the reserved width, so the text
+                  // can change size without moving the tab.
+                  Center(
+                    child: AnimatedDefaultTextStyle(
+                      duration: duration,
+                      curve: Curves.easeOutCubic,
+                      style: TextStyle(
+                        fontSize: selected ? _selectedSize : _unselectedSize,
+                        height: 1,
+                        fontWeight: selected
+                            ? FontWeight.w700
+                            : FontWeight.w500,
+                        color: selected ? selectedColor : unselectedColor,
+                      ),
+                      child: Text(label, maxLines: 1),
+                    ),
                   ),
-                  child: Text(label),
-                ),
-                // 官方指示条：高 `app:arw` = 3dp、宽 `app:auw` = 16dp（`ap3.xml`），
-                // 在 `SlidingTabLayout.E()` 里按 tab 中心对齐。透明度跟着
-                // 字号一起过渡，避免切换时只剩字在动。
-                const SizedBox(height: 3),
-                AnimatedContainer(
-                  duration: duration,
-                  curve: Curves.easeOutCubic,
-                  width: 16,
-                  height: 3,
-                  decoration: BoxDecoration(
-                    color: selected ? selectedColor : Colors.transparent,
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-              ],
+                  // 下划线由整条频道条统一画（见 `_buildIndicator`），这里不再
+                  // 为每个标签预留 6dp 的空位：那 6dp 会把文字顶到条带上方，
+                  // 下划线就离文字多出十来个像素。留白与首页标签条一致。
+                ],
+              ),
             ),
           ),
         ),
@@ -2706,6 +3172,10 @@ class _FeedDanmakuOverlay extends StatelessWidget {
               rate: playback.rate.value,
               playing: playback.playing.value,
               landscape: false,
+              // 官方 feed 的弹幕容器 `ci2` 先让开状态栏 + 92dp 的顶部栏，
+              // 不是从屏幕 y=0 起画（`vq3/j.java` `B0()`）。
+              topInset:
+                  MediaQuery.paddingOf(context).top + _feedDanmakuTopMargin,
               settings: settings,
             ),
           ),
@@ -2834,7 +3304,9 @@ class _CardGestures extends StatelessWidget {
             if (inBand(details.localPosition.dx)) {
               onPanelLongPress();
             } else {
-              HapticFeedback.lightImpact();
+              if (HapticPreferences.instance.value) {
+                HapticFeedback.lightImpact();
+              }
               onBoostLongPressStart();
             }
           },
@@ -3720,40 +4192,6 @@ class _SwipeUpHint extends StatelessWidget {
   );
 }
 
-/// Official `aq0.xml` pull-to-refresh strip: 16sp 「下拉刷新内容」.
-class _PullRefreshHint extends StatelessWidget {
-  final bool armed;
-
-  /// 浅色页用墨色（白字在白底上看不见），视频流仍用白字。
-  final Color color;
-
-  const _PullRefreshHint({required this.armed, required this.color});
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: SizedBox(
-        height: 22,
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              armed ? '正在刷新内容' : '下拉刷新内容',
-              style: TextStyle(fontSize: 16, color: color),
-            ),
-            const SizedBox(width: 8),
-            SizedBox(
-              width: 16,
-              height: 16,
-              child: CircularProgressIndicator(strokeWidth: 1.5, color: color),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 /// The video rectangle of the on-screen card.
 ///
 /// The native surface producer cannot be cropped or resized by a Flutter rect,
@@ -3780,14 +4218,14 @@ class _InlineVideoLayer extends StatelessWidget {
   /// `contain` over a black backing — the same look as the video's
   /// `VideoFit.contain` right below. Phones keep a portrait card, so they
   /// keep filling.
-  Widget _cover(int cacheWidth) => ColoredBox(
+  Widget _cover(int cacheWidth, {required bool wide}) => ColoredBox(
     color: Colors.black,
     child: StoryCover(
       key: ValueKey('drama_inline_cover_${item.kind}_${item.id}'),
       item: item,
       cacheWidth: cacheWidth,
       alignment: Alignment.topCenter,
-      fit: isWindowsDesktop ? BoxFit.contain : BoxFit.cover,
+      fit: wide ? BoxFit.contain : BoxFit.cover,
     ),
   );
 
@@ -3801,6 +4239,7 @@ class _InlineVideoLayer extends StatelessWidget {
     return LayoutBuilder(
       builder: (context, constraints) {
         final window = constraints.biggest;
+        final wide = isWindowsDesktop || window.width >= 840;
         final cacheWidth =
             (window.width * MediaQuery.devicePixelRatioOf(context)).ceil();
         return AnimatedBuilder(
@@ -3812,7 +4251,7 @@ class _InlineVideoLayer extends StatelessWidget {
             playback.videoSize,
           ]),
           builder: (context, _) {
-            final cover = _cover(cacheWidth);
+            final cover = _cover(cacheWidth, wide: wide);
             // A card the session is not playing (yet) shows its cover only.
             if (playback.activeId.value != item.id) return cover;
             final textureId = playback.textureId.value;
@@ -3829,7 +4268,7 @@ class _InlineVideoLayer extends StatelessWidget {
               // Official display mode for a feed card: fill the frame unless
               // the source is wide enough to be pinned to its width. The
               // overflow is clipped by the ClipRRect above this layer.
-              fit: isWindowsDesktop ? VideoFit.contain : VideoFit.fillFrame,
+              fit: wide ? VideoFit.contain : VideoFit.fillFrame,
             );
             return Stack(
               fit: StackFit.expand,
@@ -4316,6 +4755,9 @@ class _HistoryEmpty extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final palette = HomePalette.of(context);
+    // 官方主题橙；墨水屏退化为纯黑（按钮反白字）。
+    final accent = palette.eink ? palette.ink : const Color(0xFFFA6725);
+    final onAccent = palette.eink ? palette.canvas : Colors.white;
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -4324,14 +4766,13 @@ class _HistoryEmpty extends StatelessWidget {
             width: 88,
             height: 88,
             decoration: BoxDecoration(
-              color: palette.dark ? palette.soft : const Color(0xFFFFF3E0),
+              color: palette.eink
+                  ? Colors.white
+                  : (palette.dark ? palette.soft : const Color(0xFFFFF3E0)),
               shape: BoxShape.circle,
+              border: palette.eink ? Border.all(color: palette.line) : null,
             ),
-            child: const Icon(
-              LucideIcons.clapperboard,
-              size: 38,
-              color: Color(0xFFFA6725),
-            ),
+            child: Icon(LucideIcons.clapperboard, size: 38, color: accent),
           ),
           const SizedBox(height: 16),
           Text(message, style: TextStyle(fontSize: 14, color: palette.muted)),
@@ -4343,7 +4784,7 @@ class _HistoryEmpty extends StatelessWidget {
               behavior: HitTestBehavior.opaque,
               child: DecoratedBox(
                 decoration: BoxDecoration(
-                  color: const Color(0xFFFA6725),
+                  color: accent,
                   borderRadius: BorderRadius.circular(22),
                 ),
                 child: Padding(
@@ -4355,9 +4796,9 @@ class _HistoryEmpty extends StatelessWidget {
                     // 最近页 = `Fe()`（DynamicComic 开启时「找短剧」）；
                     // 收藏页官方硬编码「找视频」。
                     buttonLabel,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 14,
-                      color: Colors.white,
+                      color: onAccent,
                       fontWeight: FontWeight.w600,
                     ),
                   ),
@@ -4497,6 +4938,12 @@ class _LocalListState extends State<_LocalList> {
             onFind: widget.onFind,
             buttonLabel: fromShelf ? '找视频' : '找短剧',
           );
+          // 桌面端跟看剧/漫剧同口径铺列（[dramaDesktopColumns]，行距也放到
+          // 16）；手机保持官方的双列 8dp。原先这里恒写 2 列，桌面上两列会被
+          // 拉到近 700dp 宽，和隔壁频道完全两种排版。
+          final desktopGrid =
+              isWindowsDesktop || MediaQuery.sizeOf(context).width >= 840;
+          final columns = desktopGrid ? dramaDesktopColumns(context) : 3;
           final body = filtered.isEmpty
               ? empty
               : GridView.builder(
@@ -4508,12 +4955,12 @@ class _LocalListState extends State<_LocalList> {
                     12,
                     MediaQuery.paddingOf(context).bottom + 72.0 + 20,
                   ),
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 2,
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: columns,
                     crossAxisSpacing: 8,
-                    mainAxisSpacing: 8,
+                    mainAxisSpacing: desktopGrid ? 16 : 8,
                     // 官方封面 10:14 + 粗体两行标题 + 进度行。
-                    childAspectRatio: 0.56,
+                    childAspectRatio: desktopGrid ? .58 : 0.47,
                   ),
                   // 尾部页脚「已显示全部内容」（官方 `u4.a()`）。
                   itemCount: filtered.length + 1,
@@ -4582,11 +5029,12 @@ class _LocalListState extends State<_LocalList> {
   /// 官方删除要按**记录身份**（kind + contentId），不能用下标。
   String _keyOf(MediaItem item) => '${item.kind}:${item.id}';
 
-  List<({String contentId, String kind})> get _targets => [
+  List<({String contentId, String kind, String source})> get _targets => [
     for (final entry in _historyEntries())
       (
         contentId: historyContentId(entry),
         kind: entry['kind']?.toString() ?? 'video',
+        source: historySource(entry),
       ),
   ];
 
@@ -4767,7 +5215,8 @@ class _LocalListState extends State<_LocalList> {
                   fromShelfEdit ? 'drama_shelf_delete' : 'drama_recent_delete',
                 ),
                 label: '删除',
-                color: const Color(0xFFF43207),
+                // 官方删除红；墨水屏退化为纯黑。
+                color: palette.eink ? palette.ink : const Color(0xFFF43207),
                 enabled: enabled,
                 onTap: enabled ? _confirmDelete : null,
               ),
@@ -4895,16 +5344,25 @@ class _LocalListState extends State<_LocalList> {
   Widget _filterChip(String? kind, String label) {
     final selected = _filter == kind;
     final palette = HomePalette.of(context);
+    // 官方「浅橙底橙字」；墨水屏选中黑底白字、未选中白底黑字。
+    final selectedBackground = palette.eink
+        ? palette.ink
+        : const Color(0x1AFA6725);
+    final idleBackground = palette.eink
+        ? Colors.white
+        : (palette.dark ? palette.soft : const Color(0x08000000));
+    final selectedForeground = palette.eink
+        ? palette.canvas
+        : const Color(0xFFFA6725);
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: () => setState(() => _filter = kind),
       child: DecoratedBox(
         // 官方 `c4e.xml` + `f.s()`：选中浅橙底橙字加粗，未选中浅灰底深字。
         decoration: BoxDecoration(
-          color: selected
-              ? const Color(0x1AFA6725)
-              : (palette.dark ? palette.soft : const Color(0x08000000)),
+          color: selected ? selectedBackground : idleBackground,
           borderRadius: BorderRadius.circular(6),
+          border: palette.eink ? Border.all(color: palette.line) : null,
         ),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
@@ -4913,7 +5371,7 @@ class _LocalListState extends State<_LocalList> {
             style: TextStyle(
               fontSize: 14,
               fontWeight: selected ? FontWeight.bold : FontWeight.normal,
-              color: selected ? const Color(0xFFFA6725) : palette.ink,
+              color: selected ? selectedForeground : palette.ink,
             ),
           ),
         ),

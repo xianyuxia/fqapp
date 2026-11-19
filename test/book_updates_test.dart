@@ -1,10 +1,9 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hive_ce/hive.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:fqapp/models/media_item.dart';
 import 'package:fqapp/pages/library_page.dart';
@@ -13,6 +12,7 @@ import 'package:fqapp/services/book_open_preferences.dart';
 import 'package:fqapp/services/chapter_cache_store.dart';
 import 'package:fqapp/services/library_store.dart';
 import 'package:fqapp/services/shelf_store.dart';
+import 'package:fqapp/services/shelf_view_store.dart';
 
 import 'support/fakes.dart';
 
@@ -32,10 +32,7 @@ final _book = MediaItem(
 );
 
 void main() {
-  setUp(
-    () =>
-        SharedPreferences.setMockInitialValues({'reader_page_mode': 'scroll'}),
-  );
+  setUp(() => setSingleChapterPrefs({'reader_page_mode': 'scroll'}));
 
   testWidgets('更新目录按章节 ID 保留当前章节和滚动位置，并保存新目录', (tester) async {
     addTearDown(() => tester.pumpWidget(const SizedBox.shrink()));
@@ -91,6 +88,12 @@ void main() {
   group('书架更新提示', () {
     late Directory directory;
     setUp(() async {
+      // 行级断言用纯列表，避免立体书架把行推到首屏之外。
+      setSingleChapterPrefs({
+        'reader_page_mode': 'scroll',
+        'shelfLayout': 'list',
+      });
+      ShelfViewStore.instance.resetForTest();
       directory = await Directory.systemTemp.createTemp('fqapp-updates-');
       Hive.init(directory.path);
       await LibraryStore.instance.init();
@@ -101,10 +104,14 @@ void main() {
       await directory.delete(recursive: true);
     });
 
-    for (final layout in [0, 1, 2]) {
-      testWidgets('版式 $layout 显示新增章节，阅读新目录后清除更新提示', (tester) async {
+    for (final mode in ['list', 'shelf', 'shelfGrid', 'grid']) {
+      testWidgets('版式 $mode 显示新增章节，阅读新目录后清除更新提示', (tester) async {
         addTearDown(() => tester.pumpWidget(const SizedBox.shrink()));
-        SharedPreferences.setMockInitialValues({'bookshelf_layout': layout});
+        setSingleChapterPrefs({
+          'reader_page_mode': 'scroll',
+          'shelfLayout': mode,
+        });
+        ShelfViewStore.instance.resetForTest();
         await tester.runAsync(() async {
           await ShelfStore.instance.add(_book);
           await LibraryStore.instance.addHistory({
@@ -149,6 +156,33 @@ void main() {
       });
     }
 
+    testWidgets('本地缓存发现的新目录先刷新，不等网络探测结束', (tester) async {
+      addTearDown(() => tester.pumpWidget(const SizedBox.shrink()));
+      await _seedShelf(tester);
+      final cache = MemoryChapterCache();
+      await cache.saveBook(
+        CachedBook(id: _book.id, title: _book.title, chapters: _chapters),
+      );
+      final probe = Completer<({bool online, bool metered})>();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: LibraryPage(
+            cacheStore: cache,
+            // 网络探测挂起：本地扫描已经发现三章，不该陪它一起等。
+            connectivity: () => probe.future,
+            chapterCountLoader: (_) async => _chapters.length,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('更新'), findsOneWidget);
+      expect(find.text('共2章·已读完'), findsNothing);
+
+      probe.complete((online: false, metered: false));
+      await tester.pumpAndSettle();
+      expect(find.text('更新'), findsOneWidget);
+    });
+
     testWidgets('联网检测新增章节，不等待打开详情页，并在返回前台时重查', (tester) async {
       addTearDown(() => tester.pumpWidget(const SizedBox.shrink()));
       await _seedShelf(tester);
@@ -159,6 +193,8 @@ void main() {
             cacheStore: MemoryChapterCache(),
             connectivity: () async => (online: true, metered: false),
             chapterCountLoader: (_) async => count,
+            // 回到前台是否重查由间隔决定；这里验证到期后确实会重查。
+            updateCheckInterval: Duration.zero,
           ),
         ),
       );
@@ -172,6 +208,36 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('更新'), findsOneWidget);
       expect(find.text('共2章·已读完'), findsNothing);
+    });
+
+    testWidgets('返回前台在最短间隔内不重复检查，下拉刷新强制检查', (tester) async {
+      addTearDown(() => tester.pumpWidget(const SizedBox.shrink()));
+      await _seedShelf(tester);
+      var attempts = 0;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: LibraryPage(
+            cacheStore: MemoryChapterCache(),
+            connectivity: () async => (online: true, metered: false),
+            chapterCountLoader: (_) async => ++attempts,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(attempts, 1);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      await tester.pump();
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pumpAndSettle();
+      expect(attempts, 1);
+
+      final refresh = tester.state<RefreshIndicatorState>(
+        find.byType(RefreshIndicator),
+      );
+      final refreshed = refresh.show();
+      await tester.pumpAndSettle();
+      await refreshed;
+      expect(attempts, 2);
     });
 
     testWidgets('书架点击封面会把后台新目录交给阅读器', (tester) async {
@@ -215,7 +281,9 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.text('更新'), findsOneWidget);
-      await tester.tap(find.text(_book.title));
+      await tester.tap(
+        find.byKey(const ValueKey('shelf-book-book:updated-book')),
+      );
       await tester.pumpAndSettle();
       expect(
         tester.widget<ReaderPage>(find.byType(ReaderPage)).chapters,
@@ -303,6 +371,7 @@ void main() {
               if (++attempt > 1) throw StateError('offline');
               return 3;
             },
+            updateCheckInterval: Duration.zero,
           ),
         ),
       );
@@ -345,7 +414,10 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.text('更新'), findsOneWidget);
-      expect(find.text('检测失败的书'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('shelf-book-book:failing')),
+        findsOneWidget,
+      );
       expect(LibraryStore.instance.historySnapshot().single['chapterId'], '2');
       expect(tester.takeException(), isNull);
     });

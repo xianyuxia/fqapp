@@ -3,13 +3,17 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'reader_tap_zones.dart';
 
-enum ReaderThemePreset { light, eyeCare, parchment, dark, eink }
+part 'reader_preferences_codec.dart';
+
+enum ReaderThemePreset { light, eyeCare, parchment, dark, eink, mistBlue }
 
 enum ReaderTitleAlignment { start, center }
 
 enum ReaderPageMode { paged, scroll }
 
 enum ReaderScrollChapterMode { replace, joined }
+
+enum ReaderDialogueHighlightStyle { automatic, background, underline }
 
 /// Compact mode keeps one footer; detailed mode also shows book/chapter data.
 /// Note: 兼容旧开关的迁移见 .agents/notes/implemented/feature/2026-10-15-reader-info-modes.md
@@ -30,6 +34,7 @@ class ReaderPreferences {
   static const _paragraphSpacingKey = 'reader_paragraph_spacing';
   static const _horizontalPaddingKey = 'reader_horizontal_padding';
   static const _themePresetKey = 'reader_theme_preset';
+  static const _customBackgroundKey = 'reader_custom_background';
   static const _letterSpacingKey = 'reader_letter_spacing';
   static const _verticalPaddingKey = 'reader_vertical_padding';
   static const _titleSizeKey = 'reader_title_size';
@@ -37,10 +42,15 @@ class ReaderPreferences {
   static const _showReadingInfoKey = 'reader_show_reading_info';
   static const _readingInfoModeKey = 'reader_info_mode';
   static const _showSystemStatusBarKey = 'reader_show_system_status_bar';
+  static const _showSystemNavigationBarKey =
+      'reader_show_system_navigation_bar';
   static const _followSystemBrightnessKey = 'reader_follow_system_brightness';
   static const _brightnessKey = 'reader_brightness';
   static const _fontPathKey = 'reader_font_path';
   static const _fontNameKey = 'reader_font_name';
+  static const _builtinSerifFontKey = 'reader_builtin_serif_font';
+  static const _firstLineIndentKey = 'reader_first_line_indent';
+  static const _justifyTextKey = 'reader_justify_text';
   static const _pageModeKey = 'reader_page_mode';
   static const _pageTurnStyleKey = 'reader_page_turn_style';
   static const _volumeKeyTurnKey = 'reader_volume_key_turn';
@@ -48,6 +58,10 @@ class ReaderPreferences {
   static const _autoTurnSecondsKey = 'reader_auto_turn_seconds';
   static const _listeningFollowKey = 'reader_listening_follow';
   static const _narrationHighlightKey = 'reader_narration_highlight';
+  static const _narrationHighlightColorKey = 'reader_narration_highlight_color';
+  static const _narrationHighlightStyleKey = 'reader_narration_highlight_style';
+  static const _dialogueHighlightKey = 'reader_dialogue_highlight';
+  static const _dialogueHighlightStyleKey = 'reader_dialogue_highlight_style';
   static const _continuousReadingKey = 'reader_continuous_reading';
   static const _scrollChapterModeKey = 'reader_scroll_chapter_mode';
   static const _einkRefreshIntervalKey = 'reader_eink_refresh_interval';
@@ -55,6 +69,8 @@ class ReaderPreferences {
   static const _tapLeftTurnsNextKey = 'reader_tap_left_turns_next';
   static const _tapZonesKey = 'reader_tap_zones';
   static const _showParagraphBubblesKey = 'reader_show_paragraph_bubbles';
+  static const _showVideoButtonKey = 'reader_show_video_button';
+  static const _videoChapterSyncKey = 'reader_video_chapter_sync';
 
   final double fontSize;
   final int fontWeight;
@@ -62,17 +78,22 @@ class ReaderPreferences {
   final double paragraphSpacing;
   final double horizontalPadding;
   final ReaderThemePreset themePreset;
+  final int? customBackgroundColor;
   final double letterSpacing;
   final double verticalPadding;
   final double titleSize;
   final ReaderTitleAlignment titleAlignment;
   final ReaderInfoMode readingInfoMode;
   final bool showSystemStatusBar;
+  final bool showSystemNavigationBar;
   bool get showReadingInfo => readingInfoMode != ReaderInfoMode.hidden;
   final bool followSystemBrightness;
   final double brightness;
   final String fontPath;
   final String fontName;
+  final bool builtinSerifFont;
+  final bool firstLineIndent;
+  final bool justifyText;
   final ReaderPageMode pageMode;
   final ReaderPageTurnStyle pageTurnStyle;
   final bool volumeKeyTurn;
@@ -88,9 +109,59 @@ class ReaderPreferences {
   /// [listeningFollow]: the highlight can show without auto page turns.
   final bool narrationHighlight;
 
+  /// 朗读句高亮的自定义底色（ARGB，半透明）。null = 跟随当前阅读背景自动
+  /// 派生（背景同色系深一档），见 [ReaderThemePreset.narrationHighlightColor]。
+  ///
+  /// 设置入口：设置 → 听书 → 高亮颜色。
+  final int? narrationHighlightColor;
+
+  /// 可选的高亮色（ARGB，半透明）：暖黄/橙/绿/蓝/紫。
+  static const narrationHighlightPresets = <int>[
+    0x47FFC107,
+    0x47FA6725,
+    0x4716A34A,
+    0x472F6FED,
+    0x477C3AED,
+  ];
+
+  /// 朗读句高亮的呈现方式：[narrationHighlightStyleWash] = 背景色块，
+  /// [narrationHighlightStyleUnderline] = 文字下划线。
+  /// null = 自动：**墨水屏用下划线**（色块会整屏拖影），其余背景色块。
+  ///
+  /// 设置入口：设置 → 听书 → 高亮样式。
+  final int? narrationHighlightStyle;
+
+  /// 高亮样式 = 背景色块。
+  static const int narrationHighlightStyleWash = 1;
+
+  /// 高亮样式 = 文字下划线。
+  static const int narrationHighlightStyleUnderline = 2;
+
+  /// 该偏好最终用哪种样式：显式选了样式就用它，否则墨水屏下划线、其余背景。
+  bool narrationUnderlineFor(ReaderThemePreset preset) =>
+      switch (narrationHighlightStyle) {
+        narrationHighlightStyleUnderline => true,
+        narrationHighlightStyleWash => false,
+        _ => preset == ReaderThemePreset.eink,
+      };
+
+  /// Marks quoted dialogue in the reading text, independently of playback.
+  final bool dialogueHighlight;
+  final ReaderDialogueHighlightStyle dialogueHighlightStyle;
+
+  bool dialogueUnderlineFor(ReaderThemePreset preset) =>
+      switch (dialogueHighlightStyle) {
+        ReaderDialogueHighlightStyle.automatic =>
+          preset == ReaderThemePreset.eink,
+        ReaderDialogueHighlightStyle.background => false,
+        ReaderDialogueHighlightStyle.underline => true,
+      };
+
   /// 滚动模式连续阅读：到底继续下拉进入下一章。默认开启。
   /// 普通分页始终直接跨章，不受这个滚动手势开关影响。
   final bool continuousReading;
+
+  /// 滚动模式默认预加载相邻章节并以分割线拼接；也可选择直接切章。
   final ReaderScrollChapterMode scrollChapterMode;
 
   /// 墨水屏整屏刷新间隔（页）：翻够这么多页调用一次厂商 EPD 全刷压残影。
@@ -111,6 +182,8 @@ class ReaderPreferences {
   /// 段评气泡：段落末尾的评论数气泡，点按打开段评。默认开启。
   /// 关闭只关气泡渲染，段评本身仍从段落菜单和章节末尾打开。
   final bool showParagraphBubbles;
+  final bool showVideoButton;
+  final bool videoChapterSync;
 
   const ReaderPreferences({
     this.fontSize = 18,
@@ -119,17 +192,22 @@ class ReaderPreferences {
     this.paragraphSpacing = 12,
     this.horizontalPadding = 20,
     this.themePreset = ReaderThemePreset.light,
+    this.customBackgroundColor,
     this.letterSpacing = 0,
     this.verticalPadding = 16,
     this.titleSize = 20,
     this.titleAlignment = ReaderTitleAlignment.start,
     bool? showReadingInfo,
     ReaderInfoMode readingInfoMode = ReaderInfoMode.compact,
-    this.showSystemStatusBar = false,
+    this.showSystemStatusBar = true,
+    this.showSystemNavigationBar = false,
     this.followSystemBrightness = true,
     this.brightness = 0.5,
     this.fontPath = '',
     this.fontName = '',
+    this.builtinSerifFont = false,
+    this.firstLineIndent = true,
+    this.justifyText = true,
     this.pageMode = ReaderPageMode.paged,
     this.pageTurnStyle = ReaderPageTurnStyle.slide,
     this.volumeKeyTurn = false,
@@ -137,13 +215,19 @@ class ReaderPreferences {
     this.autoTurnSeconds = 10,
     this.listeningFollow = true,
     this.narrationHighlight = true,
+    this.narrationHighlightColor,
+    this.narrationHighlightStyle,
+    this.dialogueHighlight = false,
+    this.dialogueHighlightStyle = ReaderDialogueHighlightStyle.automatic,
     this.continuousReading = true,
-    this.scrollChapterMode = ReaderScrollChapterMode.replace,
+    this.scrollChapterMode = ReaderScrollChapterMode.joined,
     this.einkRefreshInterval = 10,
     this.instantSwipeTurn = false,
     this.tapLeftTurnsNext = false,
     this.tapZones = defaultReaderTapZones,
     this.showParagraphBubbles = true,
+    this.showVideoButton = true,
+    this.videoChapterSync = true,
   }) : readingInfoMode = showReadingInfo == false
            ? ReaderInfoMode.hidden
            : readingInfoMode;
@@ -155,6 +239,8 @@ class ReaderPreferences {
     double? paragraphSpacing,
     double? horizontalPadding,
     ReaderThemePreset? themePreset,
+    int? customBackgroundColor,
+    bool clearCustomBackground = false,
     double? letterSpacing,
     double? verticalPadding,
     double? titleSize,
@@ -162,10 +248,14 @@ class ReaderPreferences {
     bool? showReadingInfo,
     ReaderInfoMode? readingInfoMode,
     bool? showSystemStatusBar,
+    bool? showSystemNavigationBar,
     bool? followSystemBrightness,
     double? brightness,
     String? fontPath,
     String? fontName,
+    bool? builtinSerifFont,
+    bool? firstLineIndent,
+    bool? justifyText,
     ReaderPageMode? pageMode,
     ReaderPageTurnStyle? pageTurnStyle,
     bool? volumeKeyTurn,
@@ -173,6 +263,17 @@ class ReaderPreferences {
     int? autoTurnSeconds,
     bool? listeningFollow,
     bool? narrationHighlight,
+    int? narrationHighlightColor,
+
+    /// true = 恢复「自动跟随背景派生」；此时 [narrationHighlightColor] 不生效。
+    /// （copyWith 的 null 约定是「不改」，清除必须显式说明。）
+    bool autoNarrationHighlightColor = false,
+    int? narrationHighlightStyle,
+
+    /// true = 恢复「自动」（墨水屏下划线，其余背景色块）。
+    bool autoNarrationHighlightStyle = false,
+    bool? dialogueHighlight,
+    ReaderDialogueHighlightStyle? dialogueHighlightStyle,
     bool? continuousReading,
     ReaderScrollChapterMode? scrollChapterMode,
     int? einkRefreshInterval,
@@ -180,6 +281,8 @@ class ReaderPreferences {
     bool? tapLeftTurnsNext,
     List<ReaderTapZoneAction>? tapZones,
     bool? showParagraphBubbles,
+    bool? showVideoButton,
+    bool? videoChapterSync,
   }) {
     return ReaderPreferences(
       fontSize: fontSize ?? this.fontSize,
@@ -188,6 +291,9 @@ class ReaderPreferences {
       paragraphSpacing: paragraphSpacing ?? this.paragraphSpacing,
       horizontalPadding: horizontalPadding ?? this.horizontalPadding,
       themePreset: themePreset ?? this.themePreset,
+      customBackgroundColor: clearCustomBackground
+          ? null
+          : customBackgroundColor ?? this.customBackgroundColor,
       letterSpacing: letterSpacing ?? this.letterSpacing,
       verticalPadding: verticalPadding ?? this.verticalPadding,
       titleSize: titleSize ?? this.titleSize,
@@ -200,11 +306,16 @@ class ReaderPreferences {
               ? ReaderInfoMode.compact
               : this.readingInfoMode),
       showSystemStatusBar: showSystemStatusBar ?? this.showSystemStatusBar,
+      showSystemNavigationBar:
+          showSystemNavigationBar ?? this.showSystemNavigationBar,
       followSystemBrightness:
           followSystemBrightness ?? this.followSystemBrightness,
       brightness: brightness ?? this.brightness,
       fontPath: fontPath ?? this.fontPath,
       fontName: fontName ?? this.fontName,
+      builtinSerifFont: builtinSerifFont ?? this.builtinSerifFont,
+      firstLineIndent: firstLineIndent ?? this.firstLineIndent,
+      justifyText: justifyText ?? this.justifyText,
       pageMode: pageMode ?? this.pageMode,
       pageTurnStyle: pageTurnStyle ?? this.pageTurnStyle,
       volumeKeyTurn: volumeKeyTurn ?? this.volumeKeyTurn,
@@ -212,6 +323,15 @@ class ReaderPreferences {
       autoTurnSeconds: autoTurnSeconds ?? this.autoTurnSeconds,
       listeningFollow: listeningFollow ?? this.listeningFollow,
       narrationHighlight: narrationHighlight ?? this.narrationHighlight,
+      narrationHighlightColor: autoNarrationHighlightColor
+          ? null
+          : narrationHighlightColor ?? this.narrationHighlightColor,
+      narrationHighlightStyle: autoNarrationHighlightStyle
+          ? null
+          : narrationHighlightStyle ?? this.narrationHighlightStyle,
+      dialogueHighlight: dialogueHighlight ?? this.dialogueHighlight,
+      dialogueHighlightStyle:
+          dialogueHighlightStyle ?? this.dialogueHighlightStyle,
       continuousReading: continuousReading ?? this.continuousReading,
       scrollChapterMode: scrollChapterMode ?? this.scrollChapterMode,
       einkRefreshInterval: einkRefreshInterval ?? this.einkRefreshInterval,
@@ -219,6 +339,8 @@ class ReaderPreferences {
       tapLeftTurnsNext: tapLeftTurnsNext ?? this.tapLeftTurnsNext,
       tapZones: tapZones ?? this.tapZones,
       showParagraphBubbles: showParagraphBubbles ?? this.showParagraphBubbles,
+      showVideoButton: showVideoButton ?? this.showVideoButton,
+      videoChapterSync: videoChapterSync ?? this.videoChapterSync,
     ).normalized();
   }
 
@@ -236,6 +358,9 @@ class ReaderPreferences {
           ? horizontalPadding.clamp(8, 48)
           : 20,
       themePreset: themePreset,
+      customBackgroundColor: customBackgroundColor == null
+          ? null
+          : 0xFF000000 | (customBackgroundColor! & 0x00FFFFFF),
       letterSpacing: letterSpacing.isFinite ? letterSpacing.clamp(-0.5, 3) : 0,
       verticalPadding: verticalPadding.isFinite
           ? verticalPadding.clamp(0, 64)
@@ -244,10 +369,14 @@ class ReaderPreferences {
       titleAlignment: titleAlignment,
       readingInfoMode: readingInfoMode,
       showSystemStatusBar: showSystemStatusBar,
+      showSystemNavigationBar: showSystemNavigationBar,
       followSystemBrightness: followSystemBrightness,
       brightness: brightness.isFinite ? brightness.clamp(0.02, 1) : 0.5,
       fontPath: fontPath,
       fontName: fontPath.isEmpty ? '' : fontName,
+      builtinSerifFont: builtinSerifFont,
+      firstLineIndent: firstLineIndent,
+      justifyText: justifyText,
       pageMode: pageMode,
       pageTurnStyle: pageTurnStyle,
       volumeKeyTurn: volumeKeyTurn,
@@ -257,6 +386,10 @@ class ReaderPreferences {
           : 10,
       listeningFollow: listeningFollow,
       narrationHighlight: narrationHighlight,
+      narrationHighlightColor: narrationHighlightColor,
+      narrationHighlightStyle: narrationHighlightStyle,
+      dialogueHighlight: dialogueHighlight,
+      dialogueHighlightStyle: dialogueHighlightStyle,
       continuousReading: continuousReading,
       scrollChapterMode: scrollChapterMode,
       einkRefreshInterval: einkRefreshInterval.clamp(0, 100),
@@ -264,6 +397,8 @@ class ReaderPreferences {
       tapLeftTurnsNext: tapLeftTurnsNext,
       tapZones: ensureReaderTapZonesHaveMenu(tapZones),
       showParagraphBubbles: showParagraphBubbles,
+      showVideoButton: showVideoButton,
+      videoChapterSync: videoChapterSync,
     );
   }
 
@@ -282,6 +417,10 @@ class ReaderPreferences {
       paragraphSpacing: _number(preferences, _paragraphSpacingKey) ?? 12,
       horizontalPadding: _number(preferences, _horizontalPaddingKey) ?? 20,
       themePreset: preset,
+      customBackgroundColor: _number(
+        preferences,
+        _customBackgroundKey,
+      )?.toInt(),
       letterSpacing: _number(preferences, _letterSpacingKey) ?? 0,
       verticalPadding: _number(preferences, _verticalPaddingKey) ?? 16,
       titleSize:
@@ -298,12 +437,17 @@ class ReaderPreferences {
             : ReaderInfoMode.compact,
       ),
       showSystemStatusBar:
-          _boolean(preferences, _showSystemStatusBarKey) ?? false,
+          _boolean(preferences, _showSystemStatusBarKey) ?? true,
+      showSystemNavigationBar:
+          _boolean(preferences, _showSystemNavigationBarKey) ?? false,
       followSystemBrightness:
           _boolean(preferences, _followSystemBrightnessKey) ?? true,
       brightness: _number(preferences, _brightnessKey) ?? 0.5,
       fontPath: _string(preferences, _fontPathKey),
       fontName: _string(preferences, _fontNameKey),
+      builtinSerifFont: _boolean(preferences, _builtinSerifFontKey) ?? false,
+      firstLineIndent: _boolean(preferences, _firstLineIndentKey) ?? true,
+      justifyText: _boolean(preferences, _justifyTextKey) ?? true,
       pageMode: ReaderPageMode.values.firstWhere(
         (value) => value.name == preferences.get(_pageModeKey),
         orElse: () => ReaderPageMode.paged,
@@ -319,10 +463,23 @@ class ReaderPreferences {
           .clamp(3, 60),
       listeningFollow: _boolean(preferences, _listeningFollowKey) ?? true,
       narrationHighlight: _boolean(preferences, _narrationHighlightKey) ?? true,
+      narrationHighlightColor: _number(
+        preferences,
+        _narrationHighlightColorKey,
+      )?.toInt(),
+      narrationHighlightStyle: _number(
+        preferences,
+        _narrationHighlightStyleKey,
+      )?.toInt(),
+      dialogueHighlight: _boolean(preferences, _dialogueHighlightKey) ?? false,
+      dialogueHighlightStyle: ReaderDialogueHighlightStyle.values.firstWhere(
+        (style) => style.name == preferences.get(_dialogueHighlightStyleKey),
+        orElse: () => ReaderDialogueHighlightStyle.automatic,
+      ),
       continuousReading: _boolean(preferences, _continuousReadingKey) ?? true,
       scrollChapterMode: ReaderScrollChapterMode.values.firstWhere(
-        (mode) => mode.name == preferences.get(_scrollChapterModeKey),
-        orElse: () => ReaderScrollChapterMode.replace,
+        (mode) => mode.name == preferences.getString(_scrollChapterModeKey),
+        orElse: () => ReaderScrollChapterMode.joined,
       ),
       einkRefreshInterval: (_number(preferences, _einkRefreshIntervalKey) ?? 10)
           .round(),
@@ -331,6 +488,8 @@ class ReaderPreferences {
       tapZones: _tapZones(preferences),
       showParagraphBubbles:
           _boolean(preferences, _showParagraphBubblesKey) ?? true,
+      showVideoButton: _boolean(preferences, _showVideoButtonKey) ?? true,
+      videoChapterSync: _boolean(preferences, _videoChapterSyncKey) ?? true,
     ).normalized();
   }
 
@@ -355,6 +514,10 @@ class ReaderPreferences {
       preferences.setDouble(_paragraphSpacingKey, value.paragraphSpacing),
       preferences.setDouble(_horizontalPaddingKey, value.horizontalPadding),
       preferences.setString(_themePresetKey, value.themePreset.name),
+      if (value.customBackgroundColor == null)
+        preferences.remove(_customBackgroundKey)
+      else
+        preferences.setInt(_customBackgroundKey, value.customBackgroundColor!),
       preferences.setDouble(_letterSpacingKey, value.letterSpacing),
       preferences.setDouble(_verticalPaddingKey, value.verticalPadding),
       preferences.setDouble(_titleSizeKey, value.titleSize),
@@ -363,12 +526,19 @@ class ReaderPreferences {
       preferences.setString(_readingInfoModeKey, value.readingInfoMode.name),
       preferences.setBool(_showSystemStatusBarKey, value.showSystemStatusBar),
       preferences.setBool(
+        _showSystemNavigationBarKey,
+        value.showSystemNavigationBar,
+      ),
+      preferences.setBool(
         _followSystemBrightnessKey,
         value.followSystemBrightness,
       ),
       preferences.setDouble(_brightnessKey, value.brightness),
       preferences.setString(_fontPathKey, value.fontPath),
       preferences.setString(_fontNameKey, value.fontName),
+      preferences.setBool(_builtinSerifFontKey, value.builtinSerifFont),
+      preferences.setBool(_firstLineIndentKey, value.firstLineIndent),
+      preferences.setBool(_justifyTextKey, value.justifyText),
       preferences.setString(_pageModeKey, value.pageMode.name),
       preferences.setString(_pageTurnStyleKey, value.pageTurnStyle.name),
       preferences.setBool(_volumeKeyTurnKey, value.volumeKeyTurn),
@@ -376,6 +546,25 @@ class ReaderPreferences {
       preferences.setInt(_autoTurnSecondsKey, value.autoTurnSeconds),
       preferences.setBool(_listeningFollowKey, value.listeningFollow),
       preferences.setBool(_narrationHighlightKey, value.narrationHighlight),
+      if (value.narrationHighlightColor == null)
+        preferences.remove(_narrationHighlightColorKey)
+      else
+        preferences.setInt(
+          _narrationHighlightColorKey,
+          value.narrationHighlightColor!,
+        ),
+      if (value.narrationHighlightStyle == null)
+        preferences.remove(_narrationHighlightStyleKey)
+      else
+        preferences.setInt(
+          _narrationHighlightStyleKey,
+          value.narrationHighlightStyle!,
+        ),
+      preferences.setBool(_dialogueHighlightKey, value.dialogueHighlight),
+      preferences.setString(
+        _dialogueHighlightStyleKey,
+        value.dialogueHighlightStyle.name,
+      ),
       preferences.setBool(_continuousReadingKey, value.continuousReading),
       preferences.setString(
         _scrollChapterModeKey,
@@ -389,34 +578,8 @@ class ReaderPreferences {
         encodeReaderTapZones(value.tapZones),
       ),
       preferences.setBool(_showParagraphBubblesKey, value.showParagraphBubbles),
+      preferences.setBool(_showVideoButtonKey, value.showVideoButton),
+      preferences.setBool(_videoChapterSyncKey, value.videoChapterSync),
     ]);
-  }
-
-  static double? _number(SharedPreferences preferences, String key) {
-    final value = preferences.get(key);
-    return value is num && value.isFinite ? value.toDouble() : null;
-  }
-
-  static bool? _boolean(SharedPreferences preferences, String key) {
-    final value = preferences.get(key);
-    return value is bool ? value : null;
-  }
-
-  /// 九宫格加载：无保存值时回落默认；旧单手开关开着且无九宫格时，
-  /// 迁移为单手九宫格（保持旧用户行为不变）。
-  static List<ReaderTapZoneAction> _tapZones(SharedPreferences preferences) {
-    final raw = preferences.getStringList(_tapZonesKey);
-    if (raw == null) {
-      if (_boolean(preferences, _tapLeftTurnsNextKey) == true) {
-        return List<ReaderTapZoneAction>.of(oneHandReaderTapZones);
-      }
-      return List<ReaderTapZoneAction>.of(defaultReaderTapZones);
-    }
-    return normalizeReaderTapZones(raw);
-  }
-
-  static String _string(SharedPreferences preferences, String key) {
-    final value = preferences.get(key);
-    return value is String ? value : '';
   }
 }

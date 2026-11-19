@@ -1,5 +1,8 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
+import 'app_dropdown.dart';
+import 'home/home_chip.dart';
 import 'home/home_design.dart';
 
 /// 离线缓存面板里的「分段选择器」。
@@ -49,11 +52,11 @@ class DramaGroupPicker extends StatelessWidget {
             for (var index = 0; index < groupCount; index++)
               Padding(
                 padding: const EdgeInsets.only(right: 8),
-                child: ChoiceChip(
+                child: HomeChip(
                   key: ValueKey('download-group-$index'),
-                  label: Text(_chipLabel(index)),
+                  label: _chipLabel(index),
                   selected: index == group,
-                  onSelected: (_) => onSelected(index),
+                  onTap: () => onSelected(index),
                 ),
               ),
           ],
@@ -68,28 +71,25 @@ class DramaGroupPicker extends StatelessWidget {
             key: const ValueKey('download-group-prev'),
             tooltip: '上一段',
             onPressed: group > 0 ? () => onSelected(group - 1) : null,
-            icon: const Icon(Icons.chevron_left),
+            icon: const Icon(LucideIcons.chevron_left),
           ),
           Expanded(
-            child: DropdownButtonHideUnderline(
-              child: DropdownButton<int>(
-                key: const ValueKey('download-group-picker'),
-                value: group,
-                isExpanded: true,
-                borderRadius: BorderRadius.circular(12),
-                style: TextStyle(fontSize: 13, color: palette.ink),
-                onChanged: (value) {
-                  if (value != null) onSelected(value);
-                },
-                items: [
-                  for (var index = 0; index < groupCount; index++)
-                    DropdownMenuItem<int>(
-                      key: ValueKey('download-group-item-$index'),
-                      value: index,
-                      child: Text(_rangeLabel(index)),
-                    ),
-                ],
-              ),
+            child: AppDropdown<int>(
+              key: const ValueKey('download-group-picker'),
+              value: group,
+              isExpanded: true,
+              style: TextStyle(fontSize: 13, color: palette.ink),
+              onChanged: (value) {
+                if (value != null) onSelected(value);
+              },
+              items: [
+                for (var index = 0; index < groupCount; index++)
+                  AppDropdownItem(
+                    key: ValueKey('download-group-item-$index'),
+                    value: index,
+                    label: _rangeLabel(index),
+                  ),
+              ],
             ),
           ),
           IconButton(
@@ -98,7 +98,7 @@ class DramaGroupPicker extends StatelessWidget {
             onPressed: group < groupCount - 1
                 ? () => onSelected(group + 1)
                 : null,
-            icon: const Icon(Icons.chevron_right),
+            icon: const Icon(LucideIcons.chevron_right),
           ),
         ],
       ),

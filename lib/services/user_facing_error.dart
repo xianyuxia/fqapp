@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:http/http.dart' as http;
 
 import 'api_client.dart';
+import 'backend_transport.dart';
 
 final _hasCuratedText = RegExp(r'[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]');
 
@@ -20,9 +21,22 @@ String userFacingError(Object error) {
     // '搜索失败'); a bare upstream code like `NO_THIS_TONE` is not user text.
     final message = error.message.trim();
     if (message.isNotEmpty && _hasCuratedText.hasMatch(message)) return message;
+    // Only this registration stage uses log.snssdk.com; other pool failures
+    // (storage, invalid replies, key registration) need different diagnostics.
+    if (message.startsWith('get device:')) {
+      if (message.contains('device_register:') &&
+          message.contains('Network(')) {
+        return '设备注册连接失败，请检查 log.snssdk.com:443 的网络与拦截规则后重试，无需关闭代理';
+      }
+      return '设备初始化失败，请稍后重试';
+    }
     return '加载失败，请稍后重试';
   }
   if (error is TimeoutException) return '加载超时，请检查网络后重试';
+  // The core's own deadline arrives as an abort, not a TimeoutException.
+  if (error is BackendRequestAborted && error.timedOut) {
+    return '加载超时，请检查网络后重试';
+  }
   if (error is SocketException || error is http.ClientException) {
     // API calls go through the local backend, so a refused loopback
     // connection says nothing about the device's actual connectivity.

@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -9,6 +9,7 @@ import 'package:fqapp/models/media_item.dart';
 import 'package:fqapp/models/playlet_comment.dart';
 import 'package:fqapp/pages/player_page.dart';
 import 'package:fqapp/services/episode_source_cache.dart';
+import 'package:fqapp/services/api_client.dart';
 import 'package:fqapp/services/native_player.dart';
 import 'package:fqapp/services/player_load_diagnostics.dart';
 import 'package:fqapp/services/quality_memory.dart';
@@ -34,6 +35,48 @@ void main() {
           const MethodChannel('fqapp/native_player'),
           null,
         );
+  });
+
+  testWidgets('backend 500 retries wait and stop after two attempts', (
+    tester,
+  ) async {
+    final session = _Session(
+      loader: (_) async =>
+          throw const ApiException('backend failed', statusCode: 500),
+    );
+    await _mount(tester, session);
+    expect(session.requests, ['1']);
+    await tester.pump(const Duration(milliseconds: 250));
+    await _flush(tester);
+    expect(session.requests, ['1']);
+    await tester.pump(const Duration(milliseconds: 300));
+    await _flush(tester);
+    expect(session.requests, ['1', '1']);
+    await tester.pump(const Duration(milliseconds: 1000));
+    await _flush(tester);
+    expect(session.requests, ['1', '1']);
+    await tester.pump(const Duration(milliseconds: 600));
+    await _flush(tester);
+    expect(session.requests, ['1', '1', '1']);
+    await tester.pump(const Duration(seconds: 3));
+    await _flush(tester);
+    expect(session.requests, ['1', '1', '1']);
+    expect(find.text('播放服务暂时不可用'), findsOneWidget);
+  });
+
+  testWidgets('leaving the player cancels a delayed service retry', (
+    tester,
+  ) async {
+    final session = _Session(
+      loader: (_) async =>
+          throw const ApiException('backend failed', statusCode: 500),
+    );
+    await _mount(tester, session);
+    expect(session.requests, ['1']);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump(const Duration(seconds: 3));
+    await _flush(tester);
+    expect(session.requests, ['1']);
   });
 
   testWidgets('no cover while the first frame is pending; timings split phases', (
@@ -280,8 +323,9 @@ void main() {
           displayed ? 'firstFrame' : 'error',
         );
         expect(session.store.entry?['episodeId'], displayed ? '2' : '1');
-        expect(find.byType(CircularProgressIndicator), findsNothing);
-        await tester.tap(find.widgetWithText(OutlinedButton, '重试'));
+        final spinner = displayed ? findsNothing : findsOneWidget; // 静默重试中
+        expect(find.byType(CircularProgressIndicator), spinner);
+        if (displayed) await tester.tap(find.text('重试'));
         await tester.pump(const Duration(milliseconds: 350));
         await _flush(tester);
         expect(session.requests, ['1', '2', '2']);
@@ -292,7 +336,7 @@ void main() {
         session.players.last.emitFirstFrame();
         await _flush(tester);
         expect(session.samples.last.source, 'network');
-        expect(session.samples.last.trigger, 'retry');
+        expect(session.samples.last.trigger, displayed ? 'retry' : 'autoRetry');
         expect(session.players.last.isPlaying, true);
       },
     );

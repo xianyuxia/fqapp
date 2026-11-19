@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -229,6 +229,8 @@ void main() {
       );
       await tester.pump();
       await tester.pump();
+      // 高亮离屏要稳定 300ms 才切同步胶囊，这里等它走完防抖。
+      await tester.pump(const Duration(milliseconds: 350));
     }
 
     testWidgets('highlight on screen keeps the play/pause pill', (

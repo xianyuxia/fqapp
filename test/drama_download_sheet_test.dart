@@ -1,6 +1,7 @@
 import 'dart:async';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -11,6 +12,7 @@ import 'package:fqapp/services/drama_cache_preferences.dart';
 import 'package:fqapp/services/drama_download_store.dart';
 import 'package:fqapp/services/drama_downloader.dart';
 import 'package:fqapp/services/episode_source_cache.dart';
+import 'package:fqapp/widgets/home/home_chip.dart';
 
 import 'support/fakes.dart';
 
@@ -121,11 +123,11 @@ void main() {
     // 弹层标题和未选中的集数格以前硬编码为纯黑字/6% 黑底，深色下看不见。
     expect(
       tester.widget<Text>(find.text('离线缓存 · 测试剧')).style?.color,
-      const Color(0xFFF5F1EB),
+      const Color(0xFFF2F2F2),
     );
     expect(
       tester.widget<Text>(find.text('第 1 集')).style?.color,
-      const Color(0xFFF5F1EB),
+      const Color(0xFFF2F2F2),
     );
     final cell = tester.widget<Container>(
       find.descendant(
@@ -133,7 +135,7 @@ void main() {
         matching: find.byType(Container),
       ),
     );
-    expect((cell.decoration! as BoxDecoration).color, const Color(0xFF202023));
+    expect((cell.decoration! as BoxDecoration).color, const Color(0xFF2D2D2D));
   });
 
   testWidgets('点选集 → 下载按钮入队，任务态实时显示', (tester) async {
@@ -198,17 +200,17 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('download-ahead-3')));
     await tester.pumpAndSettle();
 
-    expect(
-      engine.value.map((task) => task.itemId).toList(),
-      ['ep3', 'ep4', 'ep5'],
-      reason: '只从当前集往后取 3 集，且都是自动缓存之外的手动任务',
-    );
+    expect(engine.value.map((task) => task.itemId).toList(), [
+      'ep3',
+      'ep4',
+      'ep5',
+    ], reason: '只从当前集往后取 3 集，且都是自动缓存之外的手动任务');
     expect(engine.value.every((task) => !task.auto), isTrue);
   });
 
   testWidgets('打开面板就落在正在看的那一集的区间', (tester) async {
     await pumpSheet(tester, episodeCount: 90, currentIndex: 35);
-    final chip = tester.widget<ChoiceChip>(
+    final chip = tester.widget<HomeChip>(
       find.byKey(const ValueKey('download-group-1')),
     );
     expect(chip.selected, isTrue, reason: '第 36 集属于 31-60 这一段');
@@ -289,8 +291,20 @@ void main() {
       tester,
       episodeCount: 3,
       qualities: const [
-        EpisodeVariant(name: '1080P', url: 'u1080', keyHex: '', height: 1080),
-        EpisodeVariant(name: '360P', url: 'u360', keyHex: '', height: 360),
+        EpisodeVariant(
+          name: '1080P',
+          url: 'u1080',
+          keyHex: '',
+          height: 1080,
+          qualityHeight: 1080,
+        ),
+        EpisodeVariant(
+          name: '360P',
+          url: 'u360',
+          keyHex: '',
+          height: 360,
+          qualityHeight: 360,
+        ),
       ],
     );
 
@@ -323,10 +337,22 @@ void main() {
 
   testWidgets('存的上限不在本剧档位里时，高亮实际会取的那一档', (tester) async {
     const qualities = [
-      EpisodeVariant(name: '1080P', url: 'u1080', keyHex: '', height: 1080),
-      EpisodeVariant(name: '360P', url: 'u360', keyHex: '', height: 360),
+      EpisodeVariant(
+        name: '1080P',
+        url: 'u1080',
+        keyHex: '',
+        height: 1080,
+        qualityHeight: 1080,
+      ),
+      EpisodeVariant(
+        name: '360P',
+        url: 'u360',
+        keyHex: '',
+        height: 360,
+        qualityHeight: 360,
+      ),
     ];
-    ChoiceChip chip(String height) => tester.widget<ChoiceChip>(
+    HomeChip chip(String height) => tester.widget<HomeChip>(
       find.byKey(ValueKey('download-quality-$height')),
     );
 
@@ -356,5 +382,37 @@ void main() {
 
     expect(prefs.ahead.value, 0);
     expect(find.text('已关闭，手动缓存不受影响'), findsOneWidget);
+  });
+
+  testWidgets('画质/快捷/自动缓存选择器统一用 HomeChip', (tester) async {
+    await pumpSheet(
+      tester,
+      episodeCount: 9,
+      currentIndex: 2,
+      qualities: const [
+        EpisodeVariant(name: '1080P', url: 'u1080', keyHex: '', height: 1080),
+      ],
+    );
+
+    expect(find.byType(ChoiceChip), findsNothing);
+    expect(find.byType(ActionChip), findsNothing);
+    expect(find.byType(HomeChip), findsWidgets);
+    // 三组可选：画质（最高/1080）、往后 N 集、自动缓存档位。
+    expect(find.byKey(const ValueKey('download-quality-1080')), findsOneWidget);
+    expect(find.byKey(const ValueKey('download-ahead-3')), findsOneWidget);
+    expect(find.byKey(const ValueKey('download-auto-ahead-5')), findsOneWidget);
+  });
+
+  testWidgets('分段下拉的上一段/下一段箭头走 Lucide', (tester) async {
+    await pumpSheet(tester, episodeCount: 1000, currentIndex: 700);
+
+    Icon iconOf(String key) => tester.widget<Icon>(
+      find.descendant(
+        of: find.byKey(ValueKey(key)),
+        matching: find.byType(Icon),
+      ),
+    );
+    expect(iconOf('download-group-prev').icon, LucideIcons.chevron_left);
+    expect(iconOf('download-group-next').icon, LucideIcons.chevron_right);
   });
 }

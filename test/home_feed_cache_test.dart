@@ -31,6 +31,8 @@ Future<void> _flushMicrotasks() async {
 }
 
 void main() {
+  final videoTabIndex = HomeNotifier.tabs.indexOf('视频');
+
   setUpAll(() async {
     final directory = await Directory.systemTemp.createTemp(
       'fqapp-home-feed-cache-test-',
@@ -273,7 +275,7 @@ void main() {
       HomeFeedCache.hiveReady = true;
       final cache = HomeFeedCache();
       await cache.save(
-        6,
+        videoTabIndex,
         [_item('old-1'), _item('last'), _item('old-3')],
         hasMore: true,
         lastVid: 'last',
@@ -282,7 +284,7 @@ void main() {
       final provider = NotifierProvider<HomeNotifier, HomeState>(
         () => HomeNotifier(
           feedCache: cache,
-          initialTabIndex: 6,
+          initialTabIndex: videoTabIndex,
           homepageLoader:
               ({int tabType = 2, int offset = 0, String? sessionId}) async =>
                   HomepagePage(
@@ -325,7 +327,7 @@ void main() {
     HomeFeedCache.hiveReady = true;
     final cache = HomeFeedCache();
     await cache.save(
-      6,
+      videoTabIndex,
       [_item('last'), _item('old-2')],
       hasMore: true,
       lastVid: 'last',
@@ -334,7 +336,7 @@ void main() {
     final provider = NotifierProvider<HomeNotifier, HomeState>(
       () => HomeNotifier(
         feedCache: cache,
-        initialTabIndex: 6,
+        initialTabIndex: videoTabIndex,
         homepageLoader:
             ({int tabType = 2, int offset = 0, String? sessionId}) async =>
                 HomepagePage(
@@ -362,7 +364,7 @@ void main() {
       HomeFeedCache.hiveReady = true;
       final cache = HomeFeedCache();
       await cache.save(
-        6,
+        videoTabIndex,
         [_item('a'), _item('b')],
         hasMore: true,
         lastVid: 'gone',
@@ -371,7 +373,7 @@ void main() {
       final provider = NotifierProvider<HomeNotifier, HomeState>(
         () => HomeNotifier(
           feedCache: cache,
-          initialTabIndex: 6,
+          initialTabIndex: videoTabIndex,
           homepageLoader:
               ({int tabType = 2, int offset = 0, String? sessionId}) async =>
                   HomepagePage(
@@ -395,12 +397,17 @@ void main() {
   test('a manual refresh replaces the list instead of resuming', () async {
     HomeFeedCache.hiveReady = true;
     final cache = HomeFeedCache();
-    await cache.save(6, [_item('a'), _item('b')], hasMore: true, lastVid: 'b');
+    await cache.save(
+      videoTabIndex,
+      [_item('a'), _item('b')],
+      hasMore: true,
+      lastVid: 'b',
+    );
 
     final provider = NotifierProvider<HomeNotifier, HomeState>(
       () => HomeNotifier(
         feedCache: cache,
-        initialTabIndex: 6,
+        initialTabIndex: videoTabIndex,
         homepageLoader:
             ({int tabType = 2, int offset = 0, String? sessionId}) async =>
                 HomepagePage(
@@ -470,7 +477,7 @@ void main() {
       final provider = NotifierProvider<HomeNotifier, HomeState>(
         () => HomeNotifier(
           feedCache: cache,
-          initialTabIndex: 6,
+          initialTabIndex: videoTabIndex,
           homepageLoader:
               ({int tabType = 2, int offset = 0, String? sessionId}) async =>
                   HomepagePage(
@@ -486,9 +493,14 @@ void main() {
       final notifier = container.read(provider.notifier);
       notifier.noteCurrentVid('fresh-2');
       await notifier.load();
-      // The save is fire-and-forget file IO; give the event loop real time.
-      await Future<void>.delayed(const Duration(milliseconds: 100));
-      expect(cache.load(6)!.lastVid, 'fresh-2');
+      // The save is fire-and-forget file IO; wait for the box write instead
+      // of assuming the event loop finishes within a fixed delay.
+      HomeFeedSnapshot? saved;
+      for (var i = 0; i < 80 && saved == null; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        saved = cache.load(videoTabIndex);
+      }
+      expect(saved?.lastVid, 'fresh-2');
       await cache.close();
     },
   );

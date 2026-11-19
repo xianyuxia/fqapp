@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:fqapp/services/reader_tap_zones.dart';
@@ -80,7 +80,7 @@ void main() {
     final pending = await openEditor(tester, defaultReaderTapZones);
     await tester.tap(find.text('单手模式'));
     await tester.pumpAndSettle();
-    await tester.tap(find.byIcon(Icons.close));
+    await tester.tap(find.byTooltip('关闭'));
     await tester.pumpAndSettle();
     expect(await pending, isNull);
   });

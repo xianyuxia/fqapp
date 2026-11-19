@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -289,8 +290,7 @@ class AppLog with WidgetsBindingObserver {
   }
 
   /// `/_session/<capability>/…` — the per-launch loopback capability.
-  static final _sessionPathPattern =
-      RegExp(r'''/_session/[^/\s?#'"<>]+''');
+  static final _sessionPathPattern = RegExp(r'''/_session/[^/\s?#'"<>]+''');
 
   /// `Authorization: [Bearer ]<credential>` (case-insensitive).
   static final _authorizationPattern = RegExp(
@@ -298,9 +298,7 @@ class AppLog with WidgetsBindingObserver {
   );
 
   /// Bare `Bearer <credential>` without an `Authorization:` prefix.
-  static final _bareBearerPattern = RegExp(
-    r'''([Bb]earer\s+)[^\s"'\n,;]+''',
-  );
+  static final _bareBearerPattern = RegExp(r'''([Bb]earer\s+)[^\s"'\n,;]+''');
 
   /// `Cookie: <whole header value>` — redacted to end of line.
   static final _cookiePattern = RegExp(r'([Cc]ookie\s*[:=]\s*)[^\n]*');
@@ -443,7 +441,7 @@ class AppLog with WidgetsBindingObserver {
     'W' => LogLevel.warn,
     'I' => LogLevel.info,
     _ => LogLevel.debug,
-};
+  };
 
   /// 当前落盘日志文件路径（未开启持久化为 null）。
   String? get filePath => _file?.currentPath;
@@ -532,15 +530,19 @@ class FileLogWriter {
 
   Future<void> append(String line) async {
     if (_sink == null) return;
-    final bytes = line.length + 1;
+    // 文件里写的是 UTF-8，字节数必须按 UTF-8 计：`String.length` 是 UTF-16
+    // 码元，一行中文的实际字节约为它的 3 倍，会让轮换点拖到三倍上限。
+    // 编码结果直接交给 sink，避免 write(String) 再编码一次。
+    final encoded = utf8.encode(line);
+    final bytes = encoded.length + 1;
     if (_size + bytes > maxBytes) {
       await rotate();
     }
     // rotate() 会替换 sink，必须重新取；用进入时捕获的旧 sink 会写到已关闭的流。
     final sink = _sink;
     if (sink == null) return;
-    sink.write(line);
-    sink.write('\n');
+    sink.add(encoded);
+    sink.add(const [0x0A]);
     _size += bytes;
   }
 

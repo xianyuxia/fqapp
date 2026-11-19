@@ -1,20 +1,28 @@
 import 'dart:convert';
 import 'dart:typed_data';
 import '../../models/library_backup.dart';
+import '../../models/shelf_identity.dart';
 import 'sync_document.dart';
 
 class SyncSnapshot {
   SyncSnapshot(this.values);
   final Map<String, Map<String, dynamic>> values;
+  // These snapshots merge the portable Fanqie records. The WebDAV exchange
+  // preserves other sources in the shared backup.
+  static bool _legacySource(Map<dynamic, dynamic> record) =>
+      record['source'] == null || record['source'] == ShelfIdentity.fanqie;
+
   factory SyncSnapshot.fromBackup(LibraryBackup backup) {
     final raw = jsonDecode(utf8.decode(backup.encode())) as Map;
     final values = <String, Map<String, dynamic>>{};
     for (final item in raw['shelf'] as List) {
       final v = Map<String, dynamic>.from(item as Map);
+      if (!_legacySource(v)) continue;
       values['s|${v['kind']}|${v['seriesId'] ?? v['id']}'] = v;
     }
     for (final item in raw['history'] as List) {
       final v = Map<String, dynamic>.from(item as Map);
+      if (!_legacySource(v)) continue;
       values['h|${v['kind']}|${v['id']}'] = v;
     }
     for (final item in raw['watched'] as List) {
@@ -66,7 +74,10 @@ class SyncSnapshot {
         validateKey(e.key, v.value);
       }
     }
-    final result = SyncSnapshot(document.visible);
+    final result = SyncSnapshot({
+      for (final entry in document.visible.entries)
+        if (_legacySource(entry.value)) entry.key: entry.value,
+    });
     // Reuse the portable-backup validator before any remote data reaches Hive.
     return SyncSnapshot.fromBackup(result.toBackup());
   }

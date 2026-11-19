@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 import 'sync_document.dart';
+import 'sync_folder_name.dart';
 import 'sync_transport.dart';
 import 'weiyun_hash.dart';
 import '../platform_channel.dart';
@@ -15,8 +16,6 @@ SyncTransport createCloudSyncTransport(
   SaveSyncCredentials save,
 ) {
   switch (config['provider']) {
-    case 'onedrive':
-      return OneDriveSyncTransport(config, save);
     case 'weiyun':
       return WeiyunSyncTransport(config);
     case 'ali':
@@ -53,8 +52,7 @@ class AndroidCloudSyncTransport implements SyncTransport {
     }
   }
 
-  @override
-  Future<void> prepare() async {
+  Future<void> open() async {
     if (session != null) return;
     final opened = await call<Map>('open', {
       'provider': config['provider'],
@@ -65,7 +63,16 @@ class AndroidCloudSyncTransport implements SyncTransport {
     session = opened['session'] as String;
     // Persist a rotated token before any folder operation can fail.
     await save({'password': opened['credentials'] as String});
-    await call('prepare', {'folder': _folder(config)});
+  }
+
+  @override
+  Future<void> prepare() async {
+    await open();
+    if ((config['folderId'] ?? '').isNotEmpty) {
+      await call('selectFolder', {'folderId': config['folderId']});
+    } else {
+      await call('prepare', {'folder': _folder(config)});
+    }
   }
 
   @override
@@ -119,7 +126,7 @@ class CloudHttp {
       req.followRedirects = false;
       headers.forEach(req.headers.set);
       if (!headers.keys.any((name) => name.toLowerCase() == 'user-agent')) {
-        req.headers.set(HttpHeaders.userAgentHeader, 'Mozilla/5.0 fqappX/1.0');
+        req.headers.set(HttpHeaders.userAgentHeader, 'Mozilla/5.0 fqapp/1.0');
       }
       if (bytes != null) {
         req.contentLength = bytes.length;
@@ -197,131 +204,11 @@ class CloudHttp {
 
 String _folder(Map<String, String> config) {
   final folder = config['endpoint']?.trim();
-  final name = folder == null || folder.isEmpty ? 'fqappx-sync-v1' : folder;
-  if (!RegExp(r'^[a-zA-Z0-9_-]{1,64}$').hasMatch(name)) {
-    throw const SyncFailure('云盘同步文件夹请使用 1 至 64 位字母、数字、横线或下划线');
-  }
+  final name = folder == null || folder.isEmpty
+      ? defaultSyncFolderName
+      : folder;
+  validateSyncFolderName(name);
   return name;
-}
-
-class OneDriveSyncTransport implements SyncTransport {
-  OneDriveSyncTransport(this.config, this.save);
-  final Map<String, String> config;
-  final SaveSyncCredentials save;
-  final http = CloudHttp();
-  String access = '', folderId = '';
-  static const graph = 'https://graph.microsoft.com/v1.0/me/drive';
-  Map<String, String> get headers => {'Authorization': 'Bearer $access'};
-  @override
-  Future<void> prepare() async {
-    if (folderId.isNotEmpty) return;
-    String refresh = config['password'] ?? '';
-    try {
-      final raw = jsonDecode(refresh) as Map;
-      refresh = raw['refresh_token'] as String? ?? '';
-      access = raw['access_token'] as String? ?? '';
-    } catch (_) {}
-    if (refresh.isNotEmpty) {
-      final url = Uri.https('api.oplist.org', '/onedrive/renewapi', {
-        'refresh_ui': refresh,
-        'server_use': 'true',
-        'driver_txt': 'onedrive_pr',
-      });
-      final token = await http.json(
-        'GET',
-        url.toString(),
-        headers: {
-          'User-Agent': 'Mozilla/5.0 fqappX/1.0',
-          'Referer': 'https://api.oplist.org/',
-        },
-      );
-      access = token['access_token'] as String? ?? '';
-      refresh = token['refresh_token'] as String? ?? refresh;
-      if (access.isEmpty) throw const SyncFailure('OneDrive 令牌续期失败，请重新授权');
-      await save({
-        'password': jsonEncode({
-          'access_token': access,
-          'refresh_token': refresh,
-        }),
-      });
-    }
-    if (access.isEmpty) throw const SyncFailure('请先登录 OneDrive 或导入授权结果');
-    final name = _folder(config);
-    final r = await http.send('GET', '$graph/root:/$name', headers: headers);
-    Map item;
-    if (r.status == 404) {
-      item = await http.json(
-        'POST',
-        '$graph/root/children',
-        headers: headers,
-        body: {
-          'name': name,
-          'folder': {},
-          '@microsoft.graph.conflictBehavior': 'fail',
-        },
-      );
-    } else if (r.status == 200) {
-      item = jsonDecode(utf8.decode(r.bytes)) as Map;
-    } else {
-      throw SyncFailure('OneDrive 文件夹读取失败（HTTP ${r.status}）');
-    }
-    if (item['folder'] is! Map) throw const SyncFailure('OneDrive 同名项目不是文件夹');
-    folderId = item['id'] as String;
-  }
-
-  String get base => '$graph/items/${Uri.encodeComponent(folderId)}';
-  @override
-  Future<List<String>> list() async {
-    String? url = '$base/children?\$select=name,id&\$top=200';
-    final names = <String>[];
-    var pages = 0;
-    while (url != null) {
-      if (++pages > 20 ||
-          !url.startsWith('https://graph.microsoft.com/v1.0/')) {
-        throw const SyncFailure('OneDrive 列表分页无效');
-      }
-      final raw = await http.json('GET', url, headers: headers);
-      for (final item in raw['value'] as List) {
-        final name = item['name'];
-        if (name is String && syncSlotPattern.hasMatch(name)) names.add(name);
-      }
-      url = raw['@odata.nextLink'] as String?;
-    }
-    return names;
-  }
-
-  @override
-  Future<Uint8List?> read(String name) async {
-    checkSlotName(name);
-    // Request metadata first; download URLs are pre-authorized and never receive
-    // the Graph bearer token when their host differs from graph.microsoft.com.
-    final r = await http.send('GET', '$base:/$name', headers: headers);
-    if (r.status == 404) return null;
-    if (r.status != 200) throw SyncFailure('OneDrive 文件读取失败（HTTP ${r.status}）');
-    final item = jsonDecode(utf8.decode(r.bytes)) as Map;
-    final url = item['@microsoft.graph.downloadUrl'];
-    if (url is! String) throw const SyncFailure('OneDrive 未返回下载地址');
-    final file = await http.send('GET', url);
-    if (file.status != 200) throw const SyncFailure('OneDrive 下载失败');
-    return file.bytes;
-  }
-
-  @override
-  Future<void> write(String name, Uint8List bytes) async {
-    checkSlotName(name);
-    final r = await http.send(
-      'PUT',
-      '$base:/$name:/content',
-      headers: {...headers, 'Content-Type': 'application/json'},
-      bytes: bytes,
-    );
-    if (![200, 201].contains(r.status)) {
-      throw SyncFailure('OneDrive 写入失败（HTTP ${r.status}）');
-    }
-  }
-
-  @override
-  void close() => http.close();
 }
 
 class WeiyunSyncTransport implements SyncTransport {
@@ -338,7 +225,7 @@ class WeiyunSyncTransport implements SyncTransport {
     ).firstMatch(text);
     final value = found?.group(1) ?? text.trim();
     if (!RegExp(r'^[A-Za-z0-9_.-]{16,2048}$').hasMatch(value)) {
-      throw const SyncFailure('未识别到微云 MCP Token，请粘贴官方安装指令');
+      throw const SyncFailure('未识别到微云 API Key，请粘贴从微云官网复制的完整 API Key');
     }
     return value;
   }
@@ -413,6 +300,12 @@ class WeiyunSyncTransport implements SyncTransport {
   @override
   Future<void> prepare() async {
     if (directory.isNotEmpty) return;
+    if ((config['folderId'] ?? '').isNotEmpty) {
+      directory = config['folderId']!;
+      parent = config['folderParent'] ?? '';
+      if (parent.isEmpty) throw const SyncFailure('请选择微云同步目录');
+      return;
+    }
     final roots = await entries(root: true);
     final name = _folder(config);
     final existing = roots.where((e) => e['dir_name'] == name).toList();
@@ -577,9 +470,8 @@ class AliSyncTransport implements SyncTransport {
     throw const SyncFailure('阿里目录项目过多，请选择专用同步目录');
   }
 
-  @override
-  Future<void> prepare() async {
-    if (directory.isNotEmpty) return;
+  Future<void> authenticate() async {
+    if (drive.isNotEmpty) return;
     Map token;
     try {
       token = jsonDecode(config['password'] ?? '') as Map;
@@ -599,6 +491,16 @@ class AliSyncTransport implements SyncTransport {
       await save({'password': jsonEncode(r)});
     }
     drive = (await post('/v2/user/get', {}))['default_drive_id'] as String;
+  }
+
+  @override
+  Future<void> prepare() async {
+    if (directory.isNotEmpty) return;
+    await authenticate();
+    if ((config['folderId'] ?? '').isNotEmpty) {
+      directory = config['folderId']!;
+      return;
+    }
     final name = _folder(config);
     final folders = (await entries(
       'root',

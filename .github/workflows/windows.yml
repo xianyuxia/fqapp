@@ -20,7 +20,7 @@ on:
       - 'scripts/*windows*'
       - '.github/workflows/windows.yml'
   push:
-    branches: [master]
+    branches: [master, listen-follow, listen-follow-ex]
     # 打 tag 也出包（与 android-apk.yml 同理）：发版时 Windows 绿色包随
     # tag 一起构建并上传为 artifact，Release 直接取用，不必再靠 master
     # 推送的产物。v1.0.133 预发布曾因缺这条而没有 Windows 版。
@@ -47,21 +47,24 @@ jobs:
           toolchain: '1.99.1'
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
-          flutter-version: '3.44.6'
+          flutter-version: '3.50.0'
           channel: stable
           cache: true
       - name: Resolve dependencies on the official unmodified SDK
-        run: flutter pub get
+        run: flutter pub get --enforce-lockfile
       - name: Analyze application
         run: flutter analyze --no-pub
-      # 行数预算门禁在 android-apk.yml 的 dart-gate 里跑：它只读源码，不依赖
-      # Windows 工具链，放在这里只会排在联网装 ffmpeg 之后。
+      # Informational source sizes are reported by the Android Dart job.
       - name: Test layout and playback lifecycle
         run: >-
           flutter test --no-pub
           test/desktop_detail_layout_test.dart test/desktop_platform_test.dart
           test/desktop_video_layout_test.dart test/player_page_test.dart
+          test/drama_download_store_test.dart test/player_connectivity_fallback_test.dart
           test/book_open_entry_test.dart
+          test/backend_service_test.dart test/network_proxy_preferences_test.dart
+          test/local_proxy_discovery_test.dart test/core_proxy_settings_panel_test.dart
+          test/proxy_startup_recovery_test.dart
       - name: Restore matching release binaries
         id: bundle-cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -69,10 +72,24 @@ jobs:
           path: |
             build/windows/x64/runner/Release
             rust/target/release/fqapi_core.dll
-          key: windows-3.44.6-rust1.99.1-${{ runner.arch }}-v1-${{ hashFiles('lib/**', 'pubspec.*', 'rust/Cargo.*', 'rust/src/**', 'rust/assets/**', 'rust/build.rs', 'native/**', 'assets/**', 'windows/runner/**', 'windows/CMakeLists.txt', 'windows/flutter/CMakeLists.txt', 'third_party/**') }}
+          key: windows-3.47.9-rust1.99.1-${{ runner.arch }}-v1-${{ hashFiles('lib/**', 'pubspec.*', 'rust/Cargo.*', 'rust/src/**', 'rust/assets/**', 'rust/build.rs', 'native/**', 'assets/**', 'windows/runner/**', 'windows/CMakeLists.txt', 'windows/flutter/CMakeLists.txt', 'third_party/**', 'scripts/prepare_windows_media.ps1', 'scripts/build_windows.ps1', '.github/workflows/windows.yml') }}
+      - name: Verify native archive download recovery
+        if: steps.bundle-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: ./scripts/test_prepare_windows_media.ps1
+      - name: Download and verify Windows media archives
+        if: steps.bundle-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: ./scripts/prepare_windows_media.ps1
       - name: Build Windows release
         if: steps.bundle-cache.outputs.cache-hit != 'true'
         run: flutter build windows --release --target lib/main.dart
+      - name: Verify Windows core proxy over real FFI
+        shell: pwsh
+        run: |
+          $env:FQAPP_RUST_HOST_LIB = (Resolve-Path 'rust/target/release/fqapi_core.dll').Path
+          flutter test --no-pub test/rust_host_integration_test.dart
+          if ($LASTEXITCODE -ne 0) { throw 'Windows core proxy FFI tests failed' }
       - name: Save verified-source release binaries
         if: steps.bundle-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -91,6 +108,10 @@ jobs:
           }
           python scripts/verify_windows_media.py
           if ($LASTEXITCODE -ne 0) { throw 'Native media verification failed' }
+          $env:FQAPP_TEST_ENCRYPTED_MEDIA = (Resolve-Path 'build/validation/windows-media/encrypted.mp4').Path
+          $env:FQAPP_TEST_DECRYPTED_MEDIA = (Resolve-Path 'build/validation/windows-media/decoded.mp4').Path
+          flutter test --no-pub test/desktop_cached_media_test.dart
+          if ($LASTEXITCODE -ne 0) { throw 'Cached media playback regression failed' }
       - name: Diagnose headless libmpv playback and teardown (manual)
         if: github.event_name == 'workflow_dispatch' && inputs.verify_player
         shell: pwsh

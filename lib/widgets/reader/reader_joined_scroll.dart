@@ -1,26 +1,57 @@
 import 'dart:async';
 import 'dart:math' as math;
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
+import '../../models/chapter_ideas.dart';
+import '../../services/ai_reading/ai_controller.dart';
 import '../../services/chapter_text_formatter.dart';
+import '../../services/reader_underline_store.dart';
 import '../../services/text_replacement_engine.dart';
 import 'reader_chapter_layout.dart';
+import 'reader_scroll_anchor.dart';
+import 'reader_joined_chapter_end.dart';
 
 class JoinedReaderChapter {
   const JoinedReaderChapter(
     this.text,
     this.content,
     this.replacement,
-    this.layout,
-  );
+    this.layout, {
+    this.ideas = ChapterIdeas.empty,
+    this.underlines = const {},
+    this.rangeUnderlines = const [],
+    this.displayRevision = -1,
+    this.aiView,
+  });
   final String text;
   final ChapterContent content;
   final TextReplacementResult? replacement;
   final ReaderChapterLayout layout;
+  final ChapterIdeas ideas;
+  final Set<int> underlines;
+  final List<ReaderRangeUnderline> rangeUnderlines;
+
+  /// Content-derived AI display revision (mode + formal result + protection +
+  /// custom rules). Used to decide whether a cached neighbor layout is stale.
+  final int displayRevision;
+
+  /// Travels with the content/layout so adopting a neighbor also adopts its
+  /// chapter-specific snapshot, rather than reusing the previously read one.
+  final AiChapterView? aiView;
 
   JoinedReaderChapter withLayout(ReaderChapterLayout value) =>
-      JoinedReaderChapter(text, content, replacement, value);
+      JoinedReaderChapter(
+        text,
+        content,
+        replacement,
+        value,
+        ideas: ideas,
+        underlines: underlines,
+        rangeUnderlines: rangeUnderlines,
+        displayRevision: displayRevision,
+        aiView: aiView,
+      );
 }
 
 class JoinedReaderPosition {
@@ -44,6 +75,8 @@ class ReaderJoinedScroll extends StatefulWidget {
     required this.onPosition,
     required this.onDragStart,
     required this.blockBuilder,
+    this.showParagraphBubbles = true,
+    this.onChapterComments,
   });
 
   final ScrollController controller;
@@ -53,6 +86,8 @@ class ReaderJoinedScroll extends StatefulWidget {
   final Future<JoinedReaderChapter> Function(int, ReaderLayoutSpec) loader;
   final ValueChanged<JoinedReaderPosition> onPosition;
   final VoidCallback onDragStart;
+  final bool showParagraphBubbles;
+  final void Function(int, JoinedReaderChapter)? onChapterComments;
   final Widget Function(int, ReaderChapterLayout, ReaderContentBlock)
   blockBuilder;
 
@@ -70,6 +105,8 @@ class ReaderJoinedScrollState extends State<ReaderJoinedScroll> {
   bool _scheduled = false;
   double? _pendingOffset;
   int _restoreRevision = 0;
+  double _pendingCorrection = 0;
+  bool _refreshing = false;
 
   List<int> get _indices => _chapters.keys.toList()..sort();
   JoinedReaderChapter? chapterAt(int index) => _chapters[index];
@@ -77,7 +114,13 @@ class ReaderJoinedScrollState extends State<ReaderJoinedScroll> {
   double _height(JoinedReaderChapter chapter) =>
       chapter.layout.contentHeight +
       chapter.layout.spec.verticalPadding * 2 +
-      _dividerHeight;
+      _endHeight(chapter);
+
+  double _endHeight(JoinedReaderChapter chapter) =>
+      ReaderJoinedChapterEnd.height(
+        chapter.layout.spec.textScaler,
+        chapter.ideas.isNotEmpty,
+      );
 
   double chapterStart(int index) {
     var start = 0.0;
@@ -90,7 +133,8 @@ class ReaderJoinedScrollState extends State<ReaderJoinedScroll> {
 
   JoinedReaderPosition? get position {
     if (!widget.controller.hasClients || _chapters.isEmpty) return null;
-    final pixels = _pendingOffset ?? widget.controller.offset;
+    final pixels =
+        _pendingOffset ?? widget.controller.offset + _pendingCorrection;
     var start = 0.0;
     final indices = _indices;
     for (final index in indices) {
@@ -127,44 +171,124 @@ class ReaderJoinedScrollState extends State<ReaderJoinedScroll> {
   void didUpdateWidget(covariant ReaderJoinedScroll oldWidget) {
     super.didUpdateWidget(oldWidget);
     final spec = widget.chapter.layout.spec;
-    if (oldWidget.chapter.layout.spec != spec ||
+    final before = position;
+    final textChanged =
         oldWidget.index == widget.index &&
-            (oldWidget.chapter.text != widget.chapter.text ||
-                oldWidget.chapter.replacement != widget.chapter.replacement)) {
-      // A font/width/replacement change invalidates adjacent measurements.
+        oldWidget.chapter.text != widget.chapter.text;
+    if (oldWidget.chapter.layout.spec != spec ||
+        oldWidget.showParagraphBubbles != widget.showParagraphBubbles ||
+        textChanged) {
+      // A font/width/text change invalidates adjacent measurements. An AI
+      // replacement on the current chapter does NOT: keep the measured
+      // neighbors and only swap the current chapter's layout.
       ++_generation;
       _pending.clear();
       _errors.clear();
+      _pendingCorrection = 0;
       _chapters.clear();
       _chapters[widget.index] = widget.chapter;
+      if (oldWidget.chapter.layout.spec == spec &&
+          before?.index == widget.index) {
+        final textOffset = before!.chapter.layout.textOffsetAtScroll(
+          before.scroll,
+        );
+        _correctBy(
+          widget.chapter.layout.scrollForTextOffset(textOffset) +
+              before.scroll -
+              before.chapter.layout.scrollForTextOffset(textOffset) -
+              widget.controller.offset,
+        );
+      }
     } else {
-      final before = position;
-      if (oldWidget.index != widget.index) {
-        final outgoing = _chapters[oldWidget.index];
-        if (outgoing != null) {
-          _chapters[oldWidget.index] = outgoing.withLayout(
-            ReaderChapterLayout(
-              title: outgoing.layout.blocks.first.text,
-              content: outgoing.content,
-              replacement: outgoing.replacement,
-              spec: spec,
-            ),
+      // Keep outgoing bubbles and measurements: changing the active chapter
+      // or applying an AI result to only that chapter must not change the
+      // geometry of neighbors already on screen.
+      final oldCurrent = _chapters[widget.index];
+      _chapters[widget.index] = widget.chapter;
+      if (before != null && _chapters.containsKey(before.index)) {
+        final layoutChanged =
+            oldCurrent == null ||
+            !identical(oldCurrent.layout, widget.chapter.layout);
+        final replacementChanged =
+            oldWidget.chapter.replacement != widget.chapter.replacement;
+        if (oldWidget.index != widget.index ||
+            layoutChanged ||
+            replacementChanged) {
+          final textOffset = before.chapter.layout.textOffsetAtScroll(
+            before.scroll,
+          );
+          _correctBy(
+            chapterStart(before.index) +
+                _chapters[before.index]!.layout.scrollForTextOffset(
+                  textOffset,
+                ) +
+                before.scroll -
+                before.chapter.layout.scrollForTextOffset(textOffset) -
+                (before.start + before.scroll),
           );
         }
       }
-      _chapters[widget.index] = widget.chapter;
-      if (before != null &&
-          _chapters.containsKey(before.index) &&
-          (oldWidget.index != widget.index ||
-              !identical(oldWidget.chapter.layout, widget.chapter.layout))) {
+    }
+    _schedulePosition();
+  }
+
+  /// Loads already-cached neighboring chapters again and swaps only those
+  /// whose AI display revision changed. The visible chapter is owned by the
+  /// host through `didUpdateWidget`; this method never replaces it.
+  Future<void> refreshChapters() async {
+    if (!mounted || _chapters.isEmpty || _refreshing) return;
+    _refreshing = true;
+    try {
+      final generation = _generation;
+      final indices = _chapters.keys
+          .where((index) => index != widget.index)
+          .toList(growable: false);
+      for (final index in indices) {
+        final old = _chapters[index];
+        if (old == null) continue;
+        JoinedReaderChapter fresh;
+        try {
+          fresh = await widget.loader(index, old.layout.spec);
+        } catch (_) {
+          continue;
+        }
+        if (!mounted ||
+            generation != _generation ||
+            !_chapters.containsKey(index)) {
+          return;
+        }
+        if (index == widget.index) continue;
+        if (fresh.displayRevision == old.displayRevision) continue;
+        _replaceChapter(index, fresh);
+      }
+    } finally {
+      _refreshing = false;
+    }
+  }
+
+  void _replaceChapter(int index, JoinedReaderChapter chapter) {
+    if (!mounted) return;
+    final old = _chapters[index];
+    if (old == null) return;
+    final before = position;
+    final oldHeight = _height(old);
+    setState(() {
+      _chapters[index] = chapter;
+    });
+    final newHeight = _height(chapter);
+    if (before != null) {
+      if (index < before.index) {
+        // Everything before the visible chapter got taller/shorter. Move the
+        // scroll offset by the delta so the same text stays under the eye.
+        _correctBy(newHeight - oldHeight);
+      } else if (index == before.index) {
         final textOffset = before.chapter.layout.textOffsetAtScroll(
           before.scroll,
         );
-        _restoreAfterLayout(
-          chapterStart(before.index) +
-              _chapters[before.index]!.layout.scrollForTextOffset(textOffset) +
-              before.scroll -
-              before.chapter.layout.scrollForTextOffset(textOffset),
+        _correctBy(
+          chapterStart(index) +
+              chapter.layout.scrollForTextOffset(textOffset) -
+              (before.start + before.scroll),
         );
       }
     }
@@ -173,7 +297,7 @@ class ReaderJoinedScrollState extends State<ReaderJoinedScroll> {
 
   void jumpToChapterOffset(int index, double offset) {
     if (!widget.controller.hasClients) return;
-    if (_adjusting) {
+    if (_adjusting || _pendingCorrection != 0) {
       _restoreAfterLayout(chapterStart(index) + offset);
       return;
     }
@@ -185,16 +309,29 @@ class ReaderJoinedScrollState extends State<ReaderJoinedScroll> {
     );
   }
 
+  void _correctBy(double delta) {
+    if (delta.abs() < .001) return;
+    _pendingCorrection += delta;
+    if (_pendingOffset != null) _pendingOffset = _pendingOffset! + delta;
+  }
+
+  double _takeCorrection() {
+    final delta = _pendingCorrection;
+    _pendingCorrection = 0;
+    return delta;
+  }
+
   void _restoreAfterLayout(double offset) {
     _adjusting = true;
     _pendingOffset = offset;
     final revision = ++_restoreRevision;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || revision != _restoreRevision) return;
+      final target = _pendingOffset!;
       _pendingOffset = null;
       if (widget.controller.hasClients) {
         widget.controller.jumpTo(
-          offset.clamp(0, widget.controller.position.maxScrollExtent),
+          target.clamp(0, widget.controller.position.maxScrollExtent),
         );
       }
       _adjusting = false;
@@ -216,7 +353,7 @@ class ReaderJoinedScrollState extends State<ReaderJoinedScroll> {
       final viewport = widget.controller.position.viewportDimension;
       final offset = widget.controller.offset;
       if (indices.first == current.index ||
-          offset - chapterStart(indices.first) < viewport) {
+          offset - chapterStart(indices.first) < viewport * 2) {
         unawaited(_load(indices.first - 1));
       }
       if (indices.last == current.index ||
@@ -249,7 +386,6 @@ class ReaderJoinedScrollState extends State<ReaderJoinedScroll> {
       if (!mounted || generation != _generation) return;
       final before = position;
       final oldStart = before?.start ?? 0;
-      final oldOffset = before == null ? 0.0 : before.start + before.scroll;
       setState(() {
         _pending.remove(index);
         _chapters[index] = chapter;
@@ -272,7 +408,8 @@ class ReaderJoinedScrollState extends State<ReaderJoinedScroll> {
         }
       });
       final delta = before == null ? 0 : chapterStart(before.index) - oldStart;
-      _restoreAfterLayout(oldOffset + delta);
+      _correctBy(delta.toDouble());
+      _schedulePosition();
     } catch (_) {
       if (!mounted || generation != _generation) return;
       setState(() {
@@ -323,16 +460,12 @@ class ReaderJoinedScrollState extends State<ReaderJoinedScroll> {
     if (row.height == spec.verticalPadding) return const SizedBox.shrink();
     return Padding(
       padding: EdgeInsets.only(top: spec.verticalPadding),
-      child: Row(
+      child: ReaderJoinedChapterEnd(
         key: ValueKey('reader-chapter-divider-${row.index}'),
-        children: [
-          const Expanded(child: Divider()),
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 16),
-            child: Text('本章完', style: TextStyle(fontSize: 12)),
-          ),
-          const Expanded(child: Divider()),
-        ],
+        index: row.index,
+        ideas: _chapters[row.index]!.ideas,
+        onComments: () =>
+            widget.onChapterComments?.call(row.index, _chapters[row.index]!),
       ),
     );
   }
@@ -358,7 +491,7 @@ class ReaderJoinedScrollState extends State<ReaderJoinedScroll> {
       rows.add((
         index: index,
         block: null,
-        height: spec.verticalPadding + _dividerHeight,
+        height: spec.verticalPadding + _endHeight(_chapters[index]!),
       ));
     }
     return NotificationListener<ScrollStartNotification>(
@@ -374,22 +507,27 @@ class ReaderJoinedScrollState extends State<ReaderJoinedScroll> {
             key: const ValueKey('reader-joined-paragraph-list'),
             controller: widget.controller,
             slivers: [
-              SliverPadding(
-                padding: EdgeInsets.symmetric(
-                  horizontal: spec.horizontalPadding,
-                ),
-                sliver: SliverVariedExtentList(
-                  itemExtentBuilder: (i, _) =>
-                      i < rows.length ? rows[i].height : _dividerHeight,
-                  delegate: _MeasuredChapterDelegate(
-                    (context, i) {
-                      if (i == rows.length) return _boundary(indices.last + 1);
-                      return _buildRow(rows[i], spec);
-                    },
-                    childCount: rows.length + 1,
-                    extent: rows.fold<double>(
-                      _dividerHeight,
-                      (sum, row) => sum + row.height,
+              ReaderScrollAnchor(
+                takeCorrection: _takeCorrection,
+                sliver: SliverPadding(
+                  padding: EdgeInsets.symmetric(
+                    horizontal: spec.horizontalPadding,
+                  ),
+                  sliver: SliverVariedExtentList(
+                    itemExtentBuilder: (i, _) =>
+                        i < rows.length ? rows[i].height : _dividerHeight,
+                    delegate: _MeasuredChapterDelegate(
+                      (context, i) {
+                        if (i == rows.length) {
+                          return _boundary(indices.last + 1);
+                        }
+                        return _buildRow(rows[i], spec);
+                      },
+                      childCount: rows.length + 1,
+                      extent: rows.fold<double>(
+                        _dividerHeight,
+                        (sum, row) => sum + row.height,
+                      ),
                     ),
                   ),
                 ),

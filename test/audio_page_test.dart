@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fqapp/models/audio_extra.dart';
 import 'package:fqapp/models/audio_time_track.dart';
@@ -180,19 +180,13 @@ void main() {
   ) async {
     final session = _Session();
     await _mount(tester, session);
-    // 官方 `te`「%s后播放下一集」：播完先进倒计时窗口，不再立刻跳章。
     session.players.first.emitCompleted();
     await _flush(tester);
-    expect(find.byKey(const Key('audio_advance_banner')), findsOneWidget);
-    expect(session.players, hasLength(1));
-    await tester.pump(const Duration(seconds: 3));
-    await _flush(tester);
+    expect(find.byKey(const Key('audio_advance_banner')), findsNothing);
     expect(session.players, hasLength(2));
     expect(session.store.entry?['chapterId'], '2');
     expect(session.players.last.isPlaying, true);
     session.players.last.emitCompleted();
-    await _flush(tester);
-    await tester.pump(const Duration(seconds: 3));
     await _flush(tester);
     expect(session.players, hasLength(3));
     // 末章播完：不再连播，改为官方 `v7` 的书末提示。
@@ -209,24 +203,142 @@ void main() {
     expect(session.players.last.isPlaying, true);
   });
 
-  testWidgets('cancelling the advance countdown stays on the chapter', (
+  testWidgets('disabled auto advance stays on the completed chapter', (
+    tester,
+  ) async {
+    final session = _Session(
+      store: ControlledReaderStore(
+        entry: {'kind': 'audio', 'autoAdvance': false},
+      ),
+    );
+    await _mount(tester, session);
+    session.players.first.emitCompleted();
+    await _flush(tester);
+    await tester.pump(const Duration(seconds: 5));
+    await _flush(tester);
+    expect(session.players, hasLength(1));
+    expect(session.players.single.isPlaying, false);
+    expect(find.text('本章已播完'), findsOneWidget);
+  });
+
+  testWidgets('buffers the next chapter silently and reuses its player', (
     tester,
   ) async {
     final session = _Session();
     await _mount(tester, session);
-    session.players.first.emitCompleted();
+    final current = session.players.single;
+    current.emitPosition(const Duration(seconds: 100));
     await _flush(tester);
-    expect(find.byKey(const Key('audio_advance_banner')), findsOneWidget);
-
-    await tester.tap(find.byKey(const Key('audio_advance_cancel')));
+    expect(session.players, hasLength(2));
+    final prepared = session.players.last;
+    expect(prepared.isCreated, true);
+    expect(prepared.isPlaying, false);
+    expect(current.isPlaying, true);
+    expect(session.store.entry?['chapterId'], '1');
+    current.emitPosition(const Duration(seconds: 110));
     await _flush(tester);
+    expect(session.requests.where((r) => r == '2:0'), hasLength(1));
+    current.emitCompleted();
+    await _flush(tester);
+    expect(session.players, hasLength(2));
+    expect(current.disposed, true);
+    expect(prepared.isPlaying, true);
+    expect(prepared.keys, hasLength(1));
+    expect(session.store.entry?['chapterId'], '2');
     expect(find.byKey(const Key('audio_advance_banner')), findsNothing);
+  });
 
-    // 取消之后即使等过倒计时窗口，也不能自己跳章。
-    await tester.pump(const Duration(seconds: 5));
+  testWidgets('a failed preload retries normally at the chapter boundary', (
+    tester,
+  ) async {
+    var nextRequests = 0;
+    final session = _Session(
+      loader: (id, {toneId}) async {
+        if (id == '2' && nextRequests++ == 0) {
+          throw StateError('temporary preloading failure');
+        }
+        return _source(id, toneId);
+      },
+    );
+    await _mount(tester, session);
+    final current = session.players.single;
+    current.emitPosition(const Duration(seconds: 100));
     await _flush(tester);
-    expect(session.players, hasLength(1));
-    expect(find.text('本章已播完'), findsOneWidget);
+    expect(session.players.last.disposed, true);
+    expect(current.isPlaying, true);
+    expect(find.byKey(const ValueKey('audio-retry')), findsNothing);
+    current.emitCompleted();
+    await _flush(tester);
+    expect(nextRequests, 2);
+    expect(session.players.last.isPlaying, true);
+    expect(session.store.entry?['chapterId'], '2');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('selecting another chapter discards the prepared next chapter', (
+    tester,
+  ) async {
+    final session = _Session();
+    await _mount(tester, session);
+    session.players.first.emitPosition(const Duration(seconds: 100));
+    await _flush(tester);
+    final prepared = session.players.last;
+    await tester.tap(find.byTooltip('目录'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('audio-chapter-2')));
+    await _flush(tester);
+    expect(prepared.disposed, true);
+    expect(prepared.isPlaying, false);
+    expect(session.players.last.isPlaying, true);
+    expect(session.store.entry?['chapterId'], '3');
+  });
+
+  testWidgets(
+    'a pending preload shares its source with immediate advancement',
+    (tester) async {
+      final nextSource = Completer<AudioSource>();
+      final session = _Session(
+        loader: (id, {toneId}) =>
+            id == '2' ? nextSource.future : Future.value(_source(id, toneId)),
+      );
+      await _mount(tester, session);
+      final current = session.players.single;
+      current.emitPosition(const Duration(seconds: 100));
+      await _flush(tester);
+      final pending = session.players.last;
+      current.emitCompleted();
+      await _flush(tester);
+      expect(pending.disposed, true);
+      expect(session.requests.where((r) => r == '2:0'), hasLength(1));
+      nextSource.complete(_source('2', '0'));
+      await _flush(tester);
+      expect(pending.calls, isNot(contains('created')));
+      expect(session.players.last.isPlaying, true);
+      expect(session.store.entry?['chapterId'], '2');
+      expect(session.requests.where((r) => r == '2:0'), hasLength(1));
+    },
+  );
+
+  testWidgets('leaving during preloading disposes the silent player', (
+    tester,
+  ) async {
+    final nextSource = Completer<AudioSource>();
+    final session = _Session(
+      loader: (id, {toneId}) =>
+          id == '2' ? nextSource.future : Future.value(_source(id, toneId)),
+    );
+    await _mount(tester, session);
+    session.players.first.emitPosition(const Duration(seconds: 100));
+    await _flush(tester);
+    expect(session.players, hasLength(2));
+    final prepared = session.players.last;
+    await _unmount(tester);
+    nextSource.complete(_source('2', '0'));
+    await _flush(tester);
+    expect(prepared.disposed, true);
+    expect(prepared.calls, isNot(contains('created')));
+    expect(prepared.isPlaying, false);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets(
@@ -358,36 +470,37 @@ void main() {
   // A paragraph the timeline cannot match falls back to the explicit zero the
   // reader hands in — never to saved history, which would be a place nobody
   // asked for.
-  testWidgets('an unresolvable paragraph anchor starts at the chapter opening', (
-    tester,
-  ) async {
-    final session = _Session(
-      startPosition: Duration.zero,
-      startParagraph: (paraIndex: null, ordinal: 9),
-      timePoints: const AudioTimeTrack([
-        AudioSyncPoint(
-          startTime: 0,
-          startPara: 0,
-          startParaOff: 0,
-          endPara: 0,
-          endParaOff: 9,
+  testWidgets(
+    'an unresolvable paragraph anchor starts at the chapter opening',
+    (tester) async {
+      final session = _Session(
+        startPosition: Duration.zero,
+        startParagraph: (paraIndex: null, ordinal: 9),
+        timePoints: const AudioTimeTrack([
+          AudioSyncPoint(
+            startTime: 0,
+            startPara: 0,
+            startParaOff: 0,
+            endPara: 0,
+            endParaOff: 9,
+          ),
+        ]),
+        store: ControlledReaderStore(
+          entry: {
+            'id': 'book',
+            'kind': 'audio',
+            'chapterId': '1',
+            'position': 100,
+            'duration': 120,
+          },
         ),
-      ]),
-      store: ControlledReaderStore(
-        entry: {
-          'id': 'book',
-          'kind': 'audio',
-          'chapterId': '1',
-          'position': 100,
-          'duration': 120,
-        },
-      ),
-    );
-    await _mount(tester, session);
-    await _flush(tester);
-    expect(session.players.single.position, Duration.zero);
-    expect(tester.takeException(), isNull);
-  });
+      );
+      await _mount(tester, session);
+      await _flush(tester);
+      expect(session.players.single.position, Duration.zero);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   // 阅读页还会递上「这一段在正文里的比例」。时间轴查不到时按比例折算时长：
   // 折算不精确，但锚定请求落到章首是用户看到的最坏结果。
@@ -526,7 +639,9 @@ void main() {
       await tester.pumpAndSettle();
       // Only voices playinfo can actually serve are offered: the synthetic
       // 默认音色 row (tone 0) is not a choice.
-      expect(find.text('默认音色'), findsNothing);
+      expect(find.byKey(const ValueKey('voice_option_0')), findsNothing);
+      // The compact page row still describes the currently active tone.
+      expect(find.text('默认音色'), findsOneWidget);
       await tester.tap(find.text('清亮男声'));
       await _flush(tester);
       await tester.pumpAndSettle();
@@ -596,6 +711,9 @@ void main() {
         ),
       );
       await _mount(tester, session);
+      await tester.ensureVisible(find.byKey(const ValueKey('audio-voice')));
+      await tester.tap(find.byKey(const ValueKey('audio-voice')));
+      await tester.pumpAndSettle();
       expect(find.text('多角色对话升级版'), findsOneWidget);
     },
   );
@@ -706,20 +824,23 @@ void main() {
     AppLifecycleState.hidden,
     AppLifecycleState.paused,
   ]) {
-    testWidgets('$lifecycle keeps playing in background and saves before the timer', (
-      tester,
-    ) async {
-      final session = _Session();
-      await _mount(tester, session);
-      session.players.single.emitPosition(const Duration(seconds: 37));
-      tester.binding.handleAppLifecycleStateChanged(lifecycle);
-      await _flush(tester);
-      expect(session.players.single.isPlaying, true);
-      expect(session.store.entry?['position'], 37);
-      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
-      await _flush(tester);
-      expect(session.players.single.isPlaying, true);
-    });
+    testWidgets(
+      '$lifecycle keeps playing in background and saves before the timer',
+      (tester) async {
+        final session = _Session();
+        await _mount(tester, session);
+        session.players.single.emitPosition(const Duration(seconds: 37));
+        tester.binding.handleAppLifecycleStateChanged(lifecycle);
+        await _flush(tester);
+        expect(session.players.single.isPlaying, true);
+        expect(session.store.entry?['position'], 37);
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.resumed,
+        );
+        await _flush(tester);
+        expect(session.players.single.isPlaying, true);
+      },
+    );
 
     testWidgets('$lifecycle pauses when background playback is disabled', (
       tester,
@@ -761,9 +882,7 @@ void main() {
     expect(session.players.single.isPlaying, true);
   });
 
-  testWidgets('becoming noisy pauses playback immediately', (
-    tester,
-  ) async {
+  testWidgets('becoming noisy pauses playback immediately', (tester) async {
     final session = _Session();
     await _mount(tester, session);
     expect(session.players.single.isPlaying, true);

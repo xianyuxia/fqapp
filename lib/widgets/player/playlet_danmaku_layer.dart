@@ -21,11 +21,12 @@ library;
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../models/playlet_comment.dart';
+import '../comment_emoji.dart';
 import 'playlet_danmaku_settings.dart';
 
 /// 同时出现在屏幕上的弹幕行距（本地取值；官方行距由
@@ -276,6 +277,7 @@ class PlayletDanmakuLayer extends StatefulWidget {
     this.playing = true,
     this.enabled = true,
     this.landscape = false,
+    this.topInset = 0,
     this.settings = const DanmakuSettings(),
   });
 
@@ -294,6 +296,11 @@ class PlayletDanmakuLayer extends StatefulWidget {
 
   /// 官方横屏飞行 12000ms、竖屏 10000ms（`container/l.java`）。
   final bool landscape;
+
+  /// 弹幕区顶部让位。官方短剧 feed 的 `ci2` 容器本身距状态栏下沿
+  /// 80/92dp（`vq3/j.java` `B0()`），不是从屏幕 y=0 起画；宿主把这段
+  /// 容器 inset 传进来，渲染层只负责其内部的轨道坐标。
+  final double topInset;
 
   /// 弹幕设置（官方 `danmaku_config`）：字号/透明度/速度/行数与横屏密度。
   final DanmakuSettings settings;
@@ -489,9 +496,12 @@ class _PlayletDanmakuLayerState extends State<PlayletDanmakuLayer>
     }
     // Flow 自带重绘边界，并缓存每条文字的子图层；不会逐帧重新排版文字。
     return IgnorePointer(
-      child: Flow(
-        delegate: _DanmakuFlowDelegate(_mediaMs, _visible),
-        children: [for (final flight in _visible) _bubble(flight.entry)],
+      child: Padding(
+        padding: EdgeInsets.only(top: widget.topInset),
+        child: Flow(
+          delegate: _DanmakuFlowDelegate(_mediaMs, _visible),
+          children: [for (final flight in _visible) _bubble(flight.entry)],
+        ),
       ),
     );
   }
@@ -506,8 +516,8 @@ class _PlayletDanmakuLayerState extends State<PlayletDanmakuLayer>
             color: const Color(0x66000000),
             borderRadius: BorderRadius.circular(4),
           ),
-    child: Text(
-      entry.text,
+    child: CommentEmojiText(
+      text: entry.text,
       maxLines: 1,
       // 官方字号/透明度来自 danmaku_config（DanmakuTextSize 5 档，
       // key_alpha 默认 255）。
