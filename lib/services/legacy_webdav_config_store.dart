@@ -1,6 +1,7 @@
 import 'dart:convert';
 
-import 'native_secure_key_storage.dart';
+import 'native_secure_key_storage.dart'
+    if (dart.library.js_interop) 'web_secure_key_storage.dart';
 import 'webdav_client.dart';
 
 /// Reads the retired v1 WebDAV settings so the unified setup can prefill them.

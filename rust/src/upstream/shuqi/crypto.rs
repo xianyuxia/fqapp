@@ -50,11 +50,7 @@ pub fn keystream() -> &'static [u8] {
 
 /// 当前毫秒时间戳（13 位十进制字符串）。
 pub fn now_ms() -> String {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .to_string()
+    crate::timeutil::now_millis().to_string()
 }
 
 /// JS `encodeURIComponent` 等价实现。

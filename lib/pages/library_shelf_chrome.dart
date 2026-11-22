@@ -20,7 +20,7 @@ mixin _LibraryShelfChrome on _LibraryPageActions {
         key: const Key('library-import-button'),
         icon: CupertinoIcons.arrow_down_doc,
         label: '导入图书',
-        onPressed: _importLocalBook,
+        onPressed: kIsWeb ? null : _importLocalBook,
       ),
       GlassMenuAnchor(
         child: Builder(

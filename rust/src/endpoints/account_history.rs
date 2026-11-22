@@ -65,7 +65,7 @@ pub async fn handle(ctx: &Ctx, req: &Request) -> Response {
         Ok(device) => device,
         Err(_) => return failure(503, "读取历史所需设备不可用，请重新开始导入"),
     };
-    let mut url = match reqwest::Url::parse(
+    let mut url = match url::Url::parse(
         "https://api5-normal-sinfonlineb.fqnovel.com/reading/bookapi/read_history/list/v1/",
     ) {
         Ok(url) => url,

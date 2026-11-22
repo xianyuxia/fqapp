@@ -191,6 +191,7 @@ mixin _LibraryPageActions on _LibraryPageStateBase {
   }
 
   Future<void> _importLocalBook() async {
+    if (kIsWeb) return;
     if (_importingBook) return;
     setState(() => _importingBook = true);
     try {

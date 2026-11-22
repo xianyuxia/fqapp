@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <base href="$FLUTTER_BASE_HREF">
+  <meta charset="UTF-8">
+  <meta name="theme-color" content="#f6f6f6">
+  <meta name="apple-mobile-web-app-title" content="什锦铺">
+  <link rel="manifest" href="manifest.json" crossorigin="use-credentials">
+  <link rel="apple-touch-icon" href="icon-180.png">
+  <title>什锦铺</title>
+  <style>
+    :root { background-color: var(--pwa-canvas, #f6f6f6); }
+    #pwa-startup {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      display: grid;
+      place-content: center;
+      justify-items: center;
+      gap: 14px;
+      background: var(--pwa-canvas, #f6f6f6);
+      color: light-dark(#343434, #eee);
+      font: 15px system-ui, sans-serif;
+    }
+    #pwa-startup progress {
+      width: min(176px, 65vw);
+      height: 6px;
+      accent-color: light-dark(#555, #ddd);
+    }
+    #pwa-startup [hidden] { display: none; }
+    #pwa-edge-host {
+      position: fixed;
+      top: env(safe-area-inset-top, 0px);
+      right: env(safe-area-inset-right, 0px);
+      bottom: env(safe-area-inset-bottom, 0px);
+      left: env(safe-area-inset-left, 0px);
+      overflow: hidden;
+    }
+  </style>
+  <script>
+    (() => {
+      const root = document.documentElement;
+      const themeColor = document.querySelector('meta[name="theme-color"]');
+      const systemDark = matchMedia('(prefers-color-scheme: dark)');
+      function preference(key) {
+        try {
+          return JSON.parse(localStorage.getItem('flutter.' + key));
+        } catch {
+          return null;
+        }
+      }
+      function applyAppearance() {
+        const mode = preference('theme_mode');
+        const eink = preference('eink_mode') === true;
+        const dark = !eink && (mode === 'dark' || (mode !== 'light' && systemDark.matches));
+        const oled = dark && preference('oled_mode') === true;
+        const archive = preference('app_theme_style') === 'archive';
+        const canvas = eink ? '#ffffff'
+          : oled ? '#000000'
+          : dark ? (archive ? '#191919' : '#151517')
+          : (archive ? '#f4f3ef' : '#f6f6f6');
+        root.style.setProperty('--pwa-canvas', canvas);
+        root.style.colorScheme = dark ? 'dark' : 'light';
+        themeColor.content = canvas;
+      }
+      applyAppearance();
+      systemDark.addEventListener('change', applyAppearance);
+      window.addEventListener('pageshow', applyAppearance);
+      window.addEventListener('focus', applyAppearance);
+      window.addEventListener('storage', applyAppearance);
+      window.addEventListener('flutter-first-frame', applyAppearance, {once: true});
+    })();
+  </script>
+  <script>
+    (() => {
+      const opt = new URLSearchParams(location.search).get('edge');
+      const key = 'shijinpu.pwa_edge_test';
+      let enabled = opt === '1';
+      try {
+        if (opt === '1') localStorage.setItem(key, '1');
+        else if (opt === '0') localStorage.removeItem(key);
+        else enabled = localStorage.getItem(key) === '1';
+      } catch {}
+      if (!enabled) return;
+      document.documentElement.dataset.pwaEdge = 'on';
+      const viewport = document.createElement('meta');
+      viewport.name = 'viewport';
+      viewport.content = 'width=device-width, initial-scale=1, maximum-scale=5, viewport-fit=cover';
+      document.head.append(viewport);
+    })();
+  </script>
+</head>
+<body>
+  <div id="pwa-startup">
+    <progress id="pwa-startup-progress" aria-labelledby="pwa-startup-message"></progress>
+    <span id="pwa-startup-message" role="status">正在加载应用…</span>
+    <button id="pwa-startup-retry" type="button" hidden>重新加载</button>
+  </div>
+  <script type="module">
+    const startup = document.getElementById('pwa-startup');
+    const message = document.getElementById('pwa-startup-message');
+    const retry = document.getElementById('pwa-startup-retry');
+    const progress = document.getElementById('pwa-startup-progress');
+    retry.addEventListener('click', () => location.reload());
+    const slow = setTimeout(() => {
+      retry.hidden = false;
+    }, 12000);
+    window.addEventListener('pwa-startup-initializing', () => {
+      message.textContent = '正在初始化界面…';
+    }, {once: true});
+    window.addEventListener('pwa-startup-error', showStartupError, {once: true});
+    window.addEventListener('flutter-first-frame', () => {
+      clearTimeout(slow);
+      startup.remove();
+    }, {once: true});
+    function showStartupError() {
+      clearTimeout(slow);
+      progress.hidden = true;
+      message.textContent = '加载失败，请重试';
+      retry.hidden = false;
+    }
+    try {
+      await import('./core.mjs');
+      if (new URLSearchParams(location.search).get('media') !== 'blob' &&
+          'serviceWorker' in navigator && typeof AbortSignal.any === 'function') {
+        await import('./media-range.mjs?v=2').catch(() => {});
+      }
+      const script = document.createElement('script');
+      script.src = 'flutter_bootstrap.js';
+      if (document.documentElement.dataset.pwaEdge === 'on') {
+        const host = document.createElement('div');
+        host.id = 'pwa-edge-host';
+        document.body.append(host);
+        script.src = 'flutter_bootstrap.js?edge=20261121';
+      }
+      script.addEventListener('error', showStartupError, {once: true});
+      document.body.append(script);
+    } catch (error) {
+      console.error(error);
+      showStartupError();
+    }
+  </script>
+</body>
+</html>

@@ -13,6 +13,8 @@ enum PlaybackIssue {
   timeout('加载超时', '网络或视频响应较慢，请稍后重试。'),
   unavailable('视频暂时无法播放', '播放地址可能已失效，可以重试获取新地址，或切换其他剧集。'),
   service('播放服务暂时不可用', '请稍后重试，或先观看其他剧集。'),
+  upstreamEmpty('暂未取得播放地址', '片源服务返回了空响应，请稍后重试。'),
+  unsupportedCodec('片源编码不支持', '当前浏览器没有可播放的片源，可以试试其他剧集。'),
   decoding('视频解析失败', '视频格式可能不受支持，可以重试或切换其他剧集。'),
   unknown('播放失败', '请重试，或切换其他剧集。'),
   empty('暂无可播放剧集', '返回后试试其他作品。');
@@ -41,6 +43,8 @@ enum PlaybackIssue {
       };
     }
     if (error is ApiException) {
+      if (error.message == '短剧取址响应为空') return upstreamEmpty;
+      if (error.message == '该视频暂不支持播放') return unsupportedCodec;
       if (error.statusCode case final int status) {
         return _fromHttpStatus(status);
       }

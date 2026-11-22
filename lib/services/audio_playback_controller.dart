@@ -1019,7 +1019,7 @@ class _AudioPlaybackController extends ChangeNotifier
   static Duration _savedDuration(Object? value) {
     if (value is! num || !value.isFinite || value <= 0) return Duration.zero;
     final milliseconds = value * 1000;
-    if (!milliseconds.isFinite || milliseconds >= 0x7fffffffffffffff) {
+    if (!milliseconds.isFinite || milliseconds >= 9223372036854775808.0) {
       return Duration.zero;
     }
     return Duration(milliseconds: milliseconds.round());

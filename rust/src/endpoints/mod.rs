@@ -17,6 +17,7 @@ pub mod content_util;
 pub mod dhcontent;
 pub mod full;
 pub mod home;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod manga;
 pub mod reader_video;
 pub mod router;
@@ -136,6 +137,7 @@ pub type RawHandler = for<'a> fn(&'a Ctx, &'a Params) -> BoxFuture<'a, ApiResult
 
 pub struct Server {
     pub ctx: Arc<Ctx>,
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) lifetime: tokio_util::sync::CancellationToken,
     routes: HashMap<&'static str, Handler>,
     raw: HashMap<&'static str, RawHandler>,
@@ -145,6 +147,7 @@ impl Server {
     pub fn new(ctx: Arc<Ctx>) -> Self {
         let mut s = Server {
             ctx,
+            #[cfg(not(target_arch = "wasm32"))]
             lifetime: tokio_util::sync::CancellationToken::new(),
             routes: HashMap::new(),
             raw: HashMap::new(),
@@ -188,6 +191,7 @@ pub mod server {
         audio::register(s);
         video::register(s);
         reader_video::register(s);
+        #[cfg(not(target_arch = "wasm32"))]
         manga::register(s);
     }
 }

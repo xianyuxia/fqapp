@@ -198,7 +198,9 @@ extension _ReaderPageBuild on _ReaderPageState {
                           child: SizedBox.expand(
                             key: _viewportKey,
                             child: AnimatedBuilder(
-                              animation: _scrollController,
+                              animation: kIsWeb && !classic
+                                  ? const AlwaysStoppedAnimation<double>(0)
+                                  : _scrollController,
                               child: _buildContent(preset, windowPadding),
                               builder: (context, content) => ReaderBookmarkPull(
                                 enabled:

@@ -147,7 +147,7 @@ pub async fn handle(ctx: &Ctx, req: &Request) -> Response {
         Resource::Topping => ("GET", "/reading/bookapi/bookshelf/topping/get/v1/"),
         Resource::Tabs => ("GET", "/reading/bookapi/bookshelf/tab/v1/"),
     };
-    let mut url = match reqwest::Url::parse(&format!("{ORIGIN}{path}")) {
+    let mut url = match url::Url::parse(&format!("{ORIGIN}{path}")) {
         Ok(url) => url,
         Err(_) => return failure(500, "书架采集接口配置无效"),
     };

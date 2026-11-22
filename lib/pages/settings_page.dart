@@ -21,6 +21,7 @@
 
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:cupertino_ui/cupertino_ui.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
@@ -180,7 +181,7 @@ class SettingsPage extends StatelessWidget {
             icon: CupertinoIcons.folder,
             title: '备份与导入',
             subtitle: '本机备份、恢复与番茄书架导入',
-            onTap: (context, _) => Navigator.push(
+            onTap: kIsWeb ? null : (context, _) => Navigator.push(
               context,
               MaterialPageRoute(builder: (_) => const LibraryBackupPage()),
             ),
@@ -189,7 +190,7 @@ class SettingsPage extends StatelessWidget {
             icon: CupertinoIcons.book,
             title: '小说离线缓存',
             subtitle: '离线续读、查看占用和清理缓存',
-            onTap: (context, _) => Navigator.push(
+            onTap: kIsWeb ? null : (context, _) => Navigator.push(
               context,
               MaterialPageRoute(builder: (_) => const CachedBooksPage()),
             ),
@@ -198,7 +199,7 @@ class SettingsPage extends StatelessWidget {
             icon: CupertinoIcons.play_rectangle,
             title: '短剧离线缓存',
             subtitle: isLinuxDesktop ? '管理已下载文件和下载任务' : '短剧下载、离线播放和清理缓存',
-            onTap: (context, _) => Navigator.push(
+            onTap: kIsWeb ? null : (context, _) => Navigator.push(
               context,
               MaterialPageRoute(builder: (_) => const CachedDramasPage()),
             ),

@@ -105,7 +105,10 @@ class AiChapterSnapshotBuilder {
   }
 
   static Uint8List _u64(int value) {
-    final bytes = ByteData(8)..setUint64(0, value, Endian.big);
+    const unit = 4294967296;
+    final bytes = ByteData(8)
+      ..setUint32(0, value ~/ unit, Endian.big)
+      ..setUint32(4, value % unit, Endian.big);
     return bytes.buffer.asUint8List();
   }
 }

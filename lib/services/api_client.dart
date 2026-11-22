@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:isolate';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:http/http.dart' as http;
 
 import '../models/audio_extra.dart';
@@ -31,6 +31,7 @@ import '../models/ugc_story.dart';
 import 'app_log.dart';
 import 'api_response_decoder.dart';
 import 'backend_service.dart';
+import 'run_parser.dart';
 import 'backend_transport.dart';
 import 'chapter_text_formatter.dart';
 import 'request_gate.dart';
@@ -401,7 +402,7 @@ class ApiClient {
     final r = await _get(url);
     final statusCode = r.statusCode;
     final bodyBytes = r.bodyBytes;
-    return Isolate.run(
+    return runParser(
       () => parseSearchTabs(
         _decodeEnvelope(statusCode, bodyBytes),
         tabType: tabType,
@@ -422,7 +423,7 @@ class ApiClient {
         final response = await _get(_url('/api/v1/books/$id/$endpoint', {}));
         final status = response.statusCode;
         final bytes = response.bodyBytes;
-        final item = await Isolate.run(
+        final item = await runParser(
           () => parseMediaIdResult(_decodeEnvelope(status, bytes), id),
         );
         if (item != null) return item;
@@ -474,7 +475,7 @@ class ApiClient {
     final r = await _get(_directoryUrl(bookId, tab));
     final statusCode = r.statusCode;
     final bodyBytes = r.bodyBytes;
-    return Isolate.run(
+    return runParser(
       () => parseDirectory(_decodeEnvelope(statusCode, bodyBytes)),
     );
   }
@@ -547,7 +548,7 @@ class ApiClient {
     final statusCode = response.statusCode;
     final bodyBytes = response.bodyBytes;
     final baseUrl = _resourceBase;
-    return Isolate.run(() {
+    return runParser(() {
       final payload = _decodeEnvelope(statusCode, bodyBytes);
       try {
         return parsePlayinfoSource(
@@ -555,6 +556,7 @@ class ApiClient {
           itemId: itemId,
           toneId: selectedTone,
           baseUrl: baseUrl,
+          preferBackup: kIsWeb,
         );
       } on FormatException catch (error) {
         // An upstream business error is final — do not fall through to the
@@ -602,7 +604,7 @@ class ApiClient {
     );
     final status = response.statusCode;
     final bytes = response.bodyBytes;
-    return Isolate.run(
+    return runParser(
       () => BookDetail.fromPayload(_decodeEnvelope(status, bytes)),
     );
   }
@@ -621,7 +623,7 @@ class ApiClient {
     );
     final status = response.statusCode;
     final bytes = response.bodyBytes;
-    return Isolate.run(
+    return runParser(
       () => BookCommentPage.fromPayload(_decodeEnvelope(status, bytes)),
     );
   }
@@ -633,7 +635,7 @@ class ApiClient {
     );
     final status = response.statusCode;
     final bytes = response.bodyBytes;
-    return Isolate.run(
+    return runParser(
       () => RelatedWork.fromPayload(_decodeEnvelope(status, bytes)),
     );
   }
@@ -645,7 +647,7 @@ class ApiClient {
     );
     final status = response.statusCode;
     final bytes = response.bodyBytes;
-    return Isolate.run(
+    return runParser(
       () => AudioToneSet.fromPayload(_decodeEnvelope(status, bytes)),
     );
   }
@@ -802,7 +804,7 @@ class ApiClient {
       );
       final status = response.statusCode;
       final bytes = response.bodyBytes;
-      return await Isolate.run(() {
+      return await runParser(() {
         final payload = _decodeEnvelope(status, bytes);
         if (isUnavailableIdeaCode(payload['code'])) return ChapterIdeas.empty;
         return ChapterIdeas.fromPayload(payload);
@@ -877,7 +879,7 @@ class ApiClient {
     );
     final status = response.statusCode;
     final bytes = response.bodyBytes;
-    return Isolate.run(
+    return runParser(
       () => parseParagraphComments(_decodeEnvelope(status, bytes)),
     );
   }
@@ -896,7 +898,7 @@ class ApiClient {
       );
       final status = response.statusCode;
       final bytes = response.bodyBytes;
-      return await Isolate.run(
+      return await runParser(
         () => SearchSuggestion.fromPayload(_decodeEnvelope(status, bytes)),
       );
     } on Exception {
@@ -910,7 +912,7 @@ class ApiClient {
       final response = await _get(_url('/api/v1/search/hot', {}));
       final status = response.statusCode;
       final bytes = response.bodyBytes;
-      return await Isolate.run(
+      return await runParser(
         () => HotSearch.fromPayload(_decodeEnvelope(status, bytes)),
       );
     } on Exception {
@@ -930,7 +932,7 @@ class ApiClient {
       );
       final status = response.statusCode;
       final bytes = response.bodyBytes;
-      return await Isolate.run(
+      return await runParser(
         () => CategoryFront.fromPayload(_decodeEnvelope(status, bytes)),
       );
     } on Exception {
@@ -950,7 +952,7 @@ class ApiClient {
       );
       final status = response.statusCode;
       final bytes = response.bodyBytes;
-      return await Isolate.run(
+      return await runParser(
         () => SearchCue.fromPayload(_decodeEnvelope(status, bytes)),
       );
     } on Exception {
@@ -966,7 +968,7 @@ class ApiClient {
     );
     final status = response.statusCode;
     final bytes = response.bodyBytes;
-    return Isolate.run(
+    return runParser(
       () => AuthorProfile.fromPayload(_decodeEnvelope(status, bytes)),
     );
   }
@@ -978,7 +980,7 @@ class ApiClient {
       final response = await _get(_homepageUrl(2, 0, null));
       final status = response.statusCode;
       final bytes = response.bodyBytes;
-      return await Isolate.run(
+      return await runParser(
         () => RankCatalog.fromHomepagePayload(_decodeEnvelope(status, bytes)),
       );
     } on Exception {
@@ -1004,7 +1006,7 @@ class ApiClient {
     );
     final status = response.statusCode;
     final bytes = response.bodyBytes;
-    return Isolate.run(
+    return runParser(
       () => RankCatalog.parsePage(
         _decodeEnvelope(status, bytes),
         startAt: startAt,
@@ -1030,7 +1032,7 @@ class ApiClient {
     );
     final status = response.statusCode;
     final bytes = response.bodyBytes;
-    return Isolate.run(
+    return runParser(
       () => CommentReplyPage.fromPayload(_decodeEnvelope(status, bytes)),
     );
   }
@@ -1049,7 +1051,7 @@ class ApiClient {
       );
       final status = response.statusCode;
       final bytes = response.bodyBytes;
-      return await Isolate.run(
+      return await runParser(
         () => ChapterSummary.fromPayload(_decodeEnvelope(status, bytes)),
       );
     } on Exception {
@@ -1078,7 +1080,7 @@ class ApiClient {
     );
     final status = response.statusCode;
     final bytes = response.bodyBytes;
-    return Isolate.run(
+    return runParser(
       () => parseParagraphComments(_decodeEnvelope(status, bytes)),
     );
   }
@@ -1107,7 +1109,7 @@ class ApiClient {
     );
     final status = response.statusCode;
     final bytes = response.bodyBytes;
-    return Isolate.run(
+    return runParser(
       () => PlayletCommentPage.fromPayload(_decodeEnvelope(status, bytes)),
     );
   }
@@ -1137,7 +1139,7 @@ class ApiClient {
     );
     final status = response.statusCode;
     final bytes = response.bodyBytes;
-    return Isolate.run(
+    return runParser(
       () => CommentReplyPage.fromPayload(_decodeEnvelope(status, bytes)),
     );
   }
@@ -1163,7 +1165,7 @@ class ApiClient {
     );
     final status = response.statusCode;
     final bytes = response.bodyBytes;
-    return Isolate.run(
+    return runParser(
       () =>
           PlayletCommentPage.fromDanmakuPayload(_decodeEnvelope(status, bytes)),
     );
@@ -1189,7 +1191,7 @@ class ApiClient {
     );
     final status = response.statusCode;
     final bytes = response.bodyBytes;
-    return Isolate.run(
+    return runParser(
       () => PlayletCommentPage.fromPayload(_decodeEnvelope(status, bytes)),
     );
   }
@@ -1313,7 +1315,7 @@ class ApiClient {
     );
     final status = response.statusCode;
     final bytes = response.bodyBytes;
-    return Isolate.run(() => _decodeEnvelope(status, bytes));
+    return runParser(() => _decodeEnvelope(status, bytes));
   }
 
   /// 复制链接的短链兜底（官方 `LinkShareItem.java:86-104` 的
@@ -1324,7 +1326,7 @@ class ApiClient {
     );
     final status = response.statusCode;
     final bytes = response.bodyBytes;
-    final payload = await Isolate.run(() => _decodeEnvelope(status, bytes));
+    final payload = await runParser(() => _decodeEnvelope(status, bytes));
     final data = payload['data'];
     if (data is String) return data.trim();
     if (data is Map && data['short_url'] != null) {
@@ -1349,7 +1351,7 @@ class ApiClient {
       );
       final status = response.statusCode;
       final bytes = response.bodyBytes;
-      final detail = await Isolate.run(
+      final detail = await runParser(
         () => SeriesDetail.fromPayload(_decodeEnvelope(status, bytes)),
       );
       if (strict && detail.isEmpty) {
@@ -1368,7 +1370,7 @@ class ApiClient {
     );
     final status = response.statusCode;
     final bytes = response.bodyBytes;
-    return Isolate.run(
+    return runParser(
       () => RelatedSeries.fromPayload(
         _decodeEnvelope(status, bytes),
         currentSeriesId: seriesId,
@@ -1385,7 +1387,7 @@ class ApiClient {
     final statusCode = response.statusCode;
     final bodyBytes = response.bodyBytes;
     final baseUrl = _resourceBase;
-    return Isolate.run(() {
+    return runParser(() {
       try {
         return parseComicImages(
           _decodeEnvelope(statusCode, bodyBytes),
@@ -1407,7 +1409,7 @@ class ApiClient {
     final r = await _get(_contentUrl(itemId, tab: tab), timeout: timeout);
     final statusCode = r.statusCode;
     final bodyBytes = r.bodyBytes;
-    return Isolate.run(() {
+    return runParser(() {
       final payload = _decodeEnvelope(statusCode, bodyBytes);
       return _extractChapterText(payload);
     });
@@ -1424,7 +1426,7 @@ class ApiClient {
       final status = response.statusCode;
       final bytes = response.bodyBytes;
       final baseUrl = _resourceBase;
-      return await Isolate.run(() {
+      return await runParser(() {
         final payload = _decodeEnvelope(status, bytes);
         final data = payload['data'];
         // Older backends return code=0 with ciphertext still in content.
@@ -1527,7 +1529,7 @@ class ApiClient {
     );
     final statusCode = r.statusCode;
     final bodyBytes = r.bodyBytes;
-    final tab = await Isolate.run(() {
+    final tab = await runParser(() {
       final payload = _decodeEnvelope(statusCode, bodyBytes);
       int? nextOffset;
       String? nextSessionId;
@@ -1624,7 +1626,7 @@ class ApiClient {
       final r = await _get(url);
       final statusCode = r.statusCode;
       final bodyBytes = r.bodyBytes;
-      return await Isolate.run(() {
+      return await runParser(() {
         final payload = _decodeEnvelope(statusCode, bodyBytes);
         final items = parseMediaItems(
           payload,
@@ -1705,7 +1707,7 @@ class ApiClient {
       );
       final statusCode = r.statusCode;
       final bodyBytes = r.bodyBytes;
-      return await Isolate.run(() {
+      return await runParser(() {
         try {
           final payload = _decodeEnvelope(statusCode, bodyBytes);
           return ChannelTable.fromPayload(payload);

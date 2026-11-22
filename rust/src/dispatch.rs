@@ -8,7 +8,9 @@
 //! flutter_rust_bridge and external HTTP clients (Legado book sources, local
 //! tooling) reach it over the loopback adapter.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::PathBuf;
 
 use serde_json::json;
 
@@ -40,6 +42,7 @@ impl Request {
 #[derive(Debug, Clone)]
 pub enum ResponseBody {
     Bytes(Vec<u8>),
+    #[cfg(not(target_arch = "wasm32"))]
     File {
         path: PathBuf,
         offset: u64,
@@ -50,6 +53,7 @@ pub enum ResponseBody {
     /// the file's index and content key while it is materialised/streamed
     /// (P1-7): the bytes on disk stay encrypted, the decrypted view exists
     /// only in the response.
+    #[cfg(not(target_arch = "wasm32"))]
     FileDecrypted {
         path: PathBuf,
         offset: u64,
@@ -98,6 +102,7 @@ impl Response {
     pub async fn into_bytes(self) -> Result<Vec<u8>, String> {
         match self.body {
             ResponseBody::Bytes(b) => Ok(b),
+            #[cfg(not(target_arch = "wasm32"))]
             ResponseBody::File {
                 path,
                 offset,
@@ -111,6 +116,7 @@ impl Response {
                 }
                 read_range(&path, offset, length).await
             }
+            #[cfg(not(target_arch = "wasm32"))]
             ResponseBody::FileDecrypted {
                 path,
                 offset,
@@ -132,6 +138,7 @@ impl Response {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 async fn read_range(path: &Path, offset: u64, length: u64) -> Result<Vec<u8>, String> {
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
     let mut file = tokio::fs::File::open(path)
@@ -215,6 +222,7 @@ pub async fn dispatch(server: &Server, req: &Request) -> Response {
     // static file server for the runtime cache directory (manga images,
     // clear media, and — via the video hook — CENC-encrypted videos whose
     // ranges are decrypted on demand, P1-7)
+    #[cfg(not(target_arch = "wasm32"))]
     if !ctx.src_dir.is_empty() && (path == "/src" || path.starts_with("/src/")) {
         let rest = path.strip_prefix("/src/").unwrap_or("");
         if let Some(resp) = crate::endpoints::video::serve_src_file(&ctx.src_dir, rest, req).await {

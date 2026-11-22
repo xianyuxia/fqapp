@@ -1,3 +1,4 @@
+import 'services/browser_player.dart';
 import 'services/audio_downloader.dart';
 import 'widgets/desktop_app_frame.dart';
 import 'services/native_player.dart';
@@ -7,7 +8,7 @@ import 'services/platform_channel.dart';
 
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/foundation.dart'
-    show LicenseRegistry, LicenseEntryWithLineBreaks;
+    show LicenseRegistry, LicenseEntryWithLineBreaks, kIsWeb;
 import 'package:flutter/services.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
@@ -82,6 +83,7 @@ Future<void> main() async {
   // 噪声里。因此整条启动流程收进同一个受保护的 Zone。
   await runZonedGuarded(() async {
     WidgetsFlutterBinding.ensureInitialized();
+    installBrowserMedia();
     // 装配失败不许挡住界面：记一条错误后照常 runApp，各页面自行退化。
     try {
       await _prepareRuntime();
@@ -96,10 +98,32 @@ Future<void> main() async {
     // `_loadLocalData` 后面还会再读一次并纠正。
     await primeWithBudget(const Duration(milliseconds: 300));
     runApp(const ProviderScope(child: FqApp()));
+    if (kIsWeb && const bool.fromEnvironment('SHIJINPU_DEFER_SERIF')) {
+      unawaited(_loadWebSerifAfterFirstFrame());
+    }
   }, (error, stack) => AppLog.e('zone', '未捕获异步异常', error: error, stack: stack));
 }
 
-/// `runApp` 之前的运行时装配：桌面窗口回调、应用内日志、分享与 Rust 日志的桥。
+Future<void> _loadWebSerifAfterFirstFrame() async {
+  await WidgetsBinding.instance.waitUntilFirstFrameRasterized;
+  try {
+    // Fetch both faces before registering either, so a failed download keeps
+    // both weights on the fallback fonts.
+    final faces = await Future.wait([
+      rootBundle.load('assets/fonts/NotoSerifSC-Regular.otf'),
+      rootBundle.load('assets/fonts/NotoSerifSC-Bold.otf'),
+    ]);
+    final loader = FontLoader('Home Serif');
+    for (final face in faces) {
+      loader.addFont(Future.value(face));
+    }
+    await loader.load();
+  } catch (error, stack) {
+    AppLog.w('fonts', '衬线字体加载失败，继续使用默认字体', error: error, stack: stack);
+  }
+}
+
+/// runApp 之前的运行时装配：桌面窗口回调、应用内日志、分享与 Rust 日志的桥。
 /// 这些都不决定界面能不能起来，所以失败只记日志（见 [main]）。
 Future<void> _prepareRuntime() async {
   registerPortedUiLicenses();

@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:isolate';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
+
 /// Envelope bodies at or below this size decode on the calling isolate:
 /// spawning a background isolate costs more than the JSON decode itself.
 const int inlineDecodeLimit = 64 * 1024;
@@ -18,6 +20,6 @@ Future<T> Function<T>(FutureOr<T> Function() computation) decodeIsolateRunner =
 /// [bodyLength] is the raw byte count; [decode] does the JSON work and returns
 /// the value to hand back to the caller.
 Future<T> decodeResponseBody<T>(int bodyLength, T Function() decode) async {
-  if (bodyLength <= inlineDecodeLimit) return decode();
+  if (kIsWeb || bodyLength <= inlineDecodeLimit) return decode();
   return decodeIsolateRunner(decode);
 }

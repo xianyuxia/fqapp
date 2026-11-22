@@ -3,21 +3,26 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
+use crate::runtime::{timeout_at, Instant};
 use base64::Engine;
 use futures::future::BoxFuture;
+#[cfg(not(target_arch = "wasm32"))]
 use once_cell::sync::Lazy;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha512};
+#[cfg(not(target_arch = "wasm32"))]
 use tokio::io::AsyncWriteExt;
-use tokio::time::Instant;
 
+#[cfg(not(target_arch = "wasm32"))]
+use crate::endpoints::base::UA_WINDOWS_BROWSER;
 use crate::endpoints::base::{
     video_detail_headers, video_detail_url, Upstream, UpstreamMode, UpstreamRequestSpec,
-    UA_ANDROID_BROWSER, UA_WINDOWS_BROWSER,
+    UA_ANDROID_BROWSER,
 };
 use crate::endpoints::util::{default_val, go_query_escape, int_default, user_agent_headers};
 use crate::endpoints::{Ctx, Params, Server};
@@ -50,10 +55,14 @@ const DIRECTORY_READING_URL: &str =
     "https://api5-normal-sinfonlineb.fqnovel.com/reading/bookapi/directory/all_items/v?";
 const DIRECTORY_READING_QUERY_SUFFIX: &str = "&book_info_md5=&need_version=true&device_id={device_id}&ac=wifi&channel=xiaomi_1967_64&aid=1967&app_name=novelapp&version_code=65132&version_name=6.5.1.32&device_platform=android&os=android&ssmix=a&device_type=FRD-AL10&device_brand=honor&language=zh&os_api=28&os_version=9&manifest_version_code=65132&resolution=1080*1920&dpi=480&update_version_code=65132&pv_player=65132&=&need_personal_recommend=1&player_so_load=1&is_android_pad_screen=0&host_abi=arm64-v8a&dragon_device_type=phone&rom_version=FRD-AL10+8.0.0.556%28C00%29&compliance_status=0";
 
+#[cfg(not(target_arch = "wasm32"))]
 type CacheLocks = HashMap<PathBuf, Weak<tokio::sync::Mutex<()>>>;
+#[cfg(not(target_arch = "wasm32"))]
 static VIDEO_CACHE_LOCKS: Lazy<Mutex<CacheLocks>> = Lazy::new(|| Mutex::new(HashMap::new()));
+#[cfg(not(target_arch = "wasm32"))]
 static VIDEO_DOWNLOADS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
+#[cfg(not(target_arch = "wasm32"))]
 fn cache_entry_lock(path: &Path) -> Arc<tokio::sync::Mutex<()>> {
     let key = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
     let mut locks = VIDEO_CACHE_LOCKS.lock().unwrap_or_else(|e| e.into_inner());
@@ -152,10 +161,21 @@ fn handle_video<'a>(ctx: &'a Ctx, params: &'a Params) -> BoxFuture<'a, ApiResult
         let fetch_deadline = work_started + fetch_budget;
         let resolution_deadline = work_started + resolution_budget;
         let parsed = fetch_parsed_video_response("v5", &video_id, fetch_deadline, async {
-            fetch_v5_video_model(ctx, &video_id).await
+            let raw = fetch_v5_video_model(ctx, &video_id).await?;
+            #[cfg(target_arch = "wasm32")]
+            if raw.is_empty() {
+                let delay = Duration::from_secs(1);
+                let min_retry_budget = Duration::from_millis(250);
+                if Instant::now() + delay + min_retry_budget < fetch_deadline {
+                    crate::runtime::sleep(delay).await;
+                    if Instant::now() + min_retry_budget < fetch_deadline {
+                        return fetch_v5_video_model(ctx, &video_id).await;
+                    }
+                }
+            }
+            Ok(raw)
         })
-        .await
-        .ok_or_else(|| ApiError::Internal("视频取流失败，请稍后重试".to_string()))?;
+        .await?;
         let fallback_bodies = new_fallback_body_cache();
         let resolved = resolve_video_source_until(
             ctx,
@@ -307,24 +327,25 @@ async fn fetch_parsed_video_response(
     video_id: &str,
     deadline: Instant,
     request: impl std::future::Future<Output = ApiResult<Vec<u8>>>,
-) -> Option<ParsedVideoResponse> {
-    let raw = match tokio::time::timeout_at(deadline, request).await {
+) -> ApiResult<ParsedVideoResponse> {
+    let fetch_failed = || ApiError::internal("视频取流失败，请稍后重试");
+    let raw = match timeout_at(deadline, request).await {
         Ok(Ok(raw)) => raw,
         Ok(Err(error)) => {
             log::warn!(
                 "video {video_id}: {source} request failed: {}",
                 error.message()
             );
-            return None;
+            return Err(fetch_failed());
         }
         Err(_) => {
             log::warn!("video {video_id}: {source} request deadline exceeded");
-            return None;
+            return Err(fetch_failed());
         }
     };
     if raw.is_empty() {
         log::warn!("video {video_id}: {source} empty response body; body_len=0");
-        return None;
+        return Err(ApiError::internal("短剧取址响应为空"));
     }
     let parsed = match ParsedVideoResponse::parse(&raw, Some(video_id)) {
         Ok(parsed) => parsed,
@@ -333,7 +354,7 @@ async fn fetch_parsed_video_response(
                 "video {video_id}: {source} response unusable: {}",
                 error.message()
             );
-            return None;
+            return Err(fetch_failed());
         }
     };
     if upstream_response_is_failure(&parsed.root) {
@@ -341,7 +362,7 @@ async fn fetch_parsed_video_response(
             "video {video_id}: {source} business rejection: {}",
             body_envelope(&parsed.root)
         );
-        return None;
+        return Err(fetch_failed());
     }
     if parsed.models.is_empty()
         && !parsed
@@ -354,7 +375,7 @@ async fn fetch_parsed_video_response(
             body_envelope(&parsed.root)
         );
     }
-    Some(parsed)
+    Ok(parsed)
 }
 
 fn upstream_response_is_failure(root: &Value) -> bool {
@@ -1326,8 +1347,68 @@ async fn fetch_fallback_video_info(
     u: &str,
     deadline: Instant,
 ) -> Result<Map<String, Value>, FallbackFetchFailure> {
+    let original = fetch_fallback_video_info_once(ctx, video_id, source, u, deadline).await?;
+    if cfg!(target_arch = "wasm32")
+        && Instant::now() < deadline
+        && fallback_video_list(&original).is_some_and(|list| {
+            !list.is_empty()
+                && list.values().all(|item| {
+                    item.as_object()
+                        .is_some_and(|info| video_quality_score(info).is_none())
+                })
+        })
+    {
+        if let Some(compatible_url) = h265_fallback_url(u) {
+            if let Ok(compatible) =
+                fetch_fallback_video_info_once(ctx, video_id, source, &compatible_url, deadline)
+                    .await
+            {
+                if matches!(
+                    extract_fallback_video_source(&compatible),
+                    VideoSourceResolution::Found(_, _)
+                ) {
+                    return Ok(compatible);
+                }
+            }
+        }
+    }
+    Ok(original)
+}
+
+fn h265_fallback_url(original: &str) -> Option<String> {
+    let (base, query) = original.split_once('?')?;
+    if query.contains('#') {
+        return None;
+    }
+    let mut codec = query
+        .split('&')
+        .filter(|pair| pair.starts_with("codec_type="));
+    if codec.next() != Some("codec_type=4") || codec.next().is_some() {
+        return None;
+    }
+    let query = query
+        .split('&')
+        .map(|pair| {
+            if pair == "codec_type=4" {
+                "codec_type=1"
+            } else {
+                pair
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("&");
+    Some(format!("{base}?{query}"))
+}
+
+async fn fetch_fallback_video_info_once(
+    ctx: &Ctx,
+    video_id: &str,
+    source: &str,
+    u: &str,
+    deadline: Instant,
+) -> Result<Map<String, Value>, FallbackFetchFailure> {
     // JSON response: same 64 MiB cap as every other API call.
-    let raw = match tokio::time::timeout_at(
+    let raw = match timeout_at(
         deadline,
         unsigned_get(
             ctx,
@@ -1374,6 +1455,13 @@ async fn fetch_fallback_video_info(
         .ok_or(FallbackFetchFailure::Retryable)
 }
 
+fn fallback_video_list(root: &Map<String, Value>) -> Option<&Map<String, Value>> {
+    root.get("video_info")?
+        .get("data")?
+        .get("video_list")?
+        .as_object()
+}
+
 fn extract_fallback_video_source(root: &Map<String, Value>) -> VideoSourceResolution {
     let Some(video_info) = root.get("video_info").and_then(|v| v.as_object()) else {
         return VideoSourceResolution::NotFound;
@@ -1386,7 +1474,7 @@ fn extract_fallback_video_source(root: &Map<String, Value>) -> VideoSourceResolu
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .and_then(|s| audio_b64_decode(s).ok());
-    let Some(video_list) = data_root.get("video_list").and_then(|v| v.as_object()) else {
+    let Some(video_list) = fallback_video_list(root) else {
         return VideoSourceResolution::NotFound;
     };
 
@@ -1736,10 +1824,12 @@ async fn unsigned_get(ctx: &Ctx, url: &str, user_agent: &str, max_bytes: usize) 
 /// Hard per-file bound for a single downloaded / cached video. A short-drama
 /// episode is far below this; the cap only stops a lying `Content-Length`
 /// or an endless body from filling the disk or memory.
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_VIDEO_DOWNLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 /// Total timeout for one video download, matching the 15 s the shared
 /// upstream transport applies to the old whole-body download.
+#[cfg(not(target_arch = "wasm32"))]
 const VIDEO_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// A plain reqwest client for streaming video downloads. The shared upstream
@@ -1747,6 +1837,7 @@ const VIDEO_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15);
 /// download path keeps its own client; it sends the same unsigned GET with
 /// the same User-Agent as `unsigned_get` (no signing, no device headers).
 /// Rotates with the core's outbound policy so downloads never reuse an old proxy pool.
+#[cfg(not(target_arch = "wasm32"))]
 fn streaming_client() -> Option<reqwest::Client> {
     static CLIENT: crate::network::ClientCache<reqwest::Client> =
         crate::network::ClientCache::new();
@@ -1766,6 +1857,7 @@ fn streaming_client() -> Option<reqwest::Client> {
 /// whole file in memory. Enforces the per-file cap from `Content-Length`
 /// when present and from the running byte count while streaming. Leaves a
 /// partial file behind on error; the caller deletes it.
+#[cfg(not(target_arch = "wasm32"))]
 async fn stream_download_to_file(
     url: &str,
     user_agent: &str,
@@ -1774,6 +1866,7 @@ async fn stream_download_to_file(
     stream_download_to_file_with_cap(url, user_agent, part_path, MAX_VIDEO_DOWNLOAD_BYTES).await
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) async fn stream_download_to_file_with_cap(
     url: &str,
     user_agent: &str,
@@ -1825,6 +1918,17 @@ pub(crate) async fn stream_download_to_file_with_cap(
 }
 
 /// Downloads the MP4, saves it to src/, and returns the served path.
+#[cfg(target_arch = "wasm32")]
+async fn download_and_save(
+    _ctx: &Ctx,
+    _video_id: &str,
+    _video_url: &str,
+    _content_key: &[u8],
+) -> Result<String, String> {
+    Err("offline video download is unavailable in the browser".to_string())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 async fn download_and_save(
     ctx: &Ctx,
     video_id: &str,
@@ -1960,8 +2064,10 @@ async fn download_and_save(
     Ok(format!("/src/{filename}"))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_VIDEO_CACHE_BYTES: i64 = 512 * 1024 * 1024;
 
+#[cfg(not(target_arch = "wasm32"))]
 struct CacheEntry {
     path: PathBuf,
     size: u64,
@@ -1970,6 +2076,7 @@ struct CacheEntry {
 
 /// Serializes background prune passes: at most one runs at a time, and a
 /// request that arrives while one is running does not queue another.
+#[cfg(not(target_arch = "wasm32"))]
 static PRUNE_LOCK: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync::Mutex::new(()));
 
 /// Requests a cache-eviction pass off the request path.
@@ -1978,10 +2085,12 @@ static PRUNE_LOCK: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync::Mute
 /// not run on an async worker or hold up the response; it is spawned and
 /// never awaited. At most one pass runs at a time; a request that arrives
 /// while a pass is in flight is skipped (the next download schedules again).
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn schedule_prune_src_cache(src_dir: &str, keep: PathBuf) {
     schedule_prune_src_cache_with_budget(src_dir, keep, MAX_VIDEO_CACHE_BYTES);
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn schedule_prune_src_cache_with_budget(src_dir: &str, keep: PathBuf, max_bytes: i64) {
     let src_dir = src_dir.to_string();
     tokio::spawn(async move {
@@ -2003,6 +2112,7 @@ fn schedule_prune_src_cache_with_budget(src_dir: &str, keep: PathBuf, max_bytes:
 /// same budget: manga images are the content-addressed `img_<sha256>.<ext>`
 /// files, and they are evictable like videos (re-downloadable on demand).
 /// In-flight downloads (`.part` / `.tmp`) are never counted or deleted.
+#[cfg(not(target_arch = "wasm32"))]
 fn prune_src_cache_with_budget(src_dir: &str, keep: &Path, max_bytes: i64) {
     let Ok(entries) = std::fs::read_dir(src_dir) else {
         return;
@@ -2106,12 +2216,15 @@ fn prune_src_cache_with_budget(src_dir: &str, keep: &Path, max_bytes: i64) {
 /// Upper bound for the `moov` box read at serve/migration time, matching the
 /// native player core's SP_MAX_MOOV_BYTES. A larger moov is treated as
 /// undetectable rather than read without bound.
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_MOOV_BYTES: u64 = 16 * 1024 * 1024;
 
+#[cfg(not(target_arch = "wasm32"))]
 fn key_sidecar_path(fp: &Path) -> PathBuf {
     PathBuf::from(format!("{}.key", fp.display()))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn write_key_sidecar(fp: &Path, content_key: &[u8]) -> Result<(), String> {
     let sidecar = key_sidecar_path(fp);
     let tmp = PathBuf::from(format!("{}.tmp", sidecar.display()));
@@ -2119,6 +2232,7 @@ fn write_key_sidecar(fp: &Path, content_key: &[u8]) -> Result<(), String> {
     std::fs::rename(&tmp, &sidecar).map_err(|e| e.to_string())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn read_key_sidecar(fp: &Path) -> Option<Vec<u8>> {
     let raw = std::fs::read_to_string(key_sidecar_path(fp)).ok()?;
     let key = hex::decode(raw.trim()).ok()?;
@@ -2130,6 +2244,7 @@ fn read_key_sidecar(fp: &Path) -> Option<Vec<u8>> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(not(target_arch = "wasm32"))]
 enum CacheCencState {
     /// The file's `moov` carries an encrypted sample entry (encv/enca).
     Encrypted,
@@ -2143,6 +2258,7 @@ enum CacheCencState {
 }
 
 /// Locates the top-level `moov` box by walking box headers only.
+#[cfg(not(target_arch = "wasm32"))]
 fn locate_moov(file: &mut std::fs::File, len: u64) -> Option<(u64, u64)> {
     use std::io::{Read, Seek, SeekFrom};
     let mut off = 0u64;
@@ -2171,6 +2287,7 @@ fn locate_moov(file: &mut std::fs::File, len: u64) -> Option<(u64, u64)> {
 }
 
 /// Reads exactly the `moov` box bytes and its file offset.
+#[cfg(not(target_arch = "wasm32"))]
 fn read_moov_bytes(path: &Path) -> Option<(u64, Vec<u8>)> {
     use std::io::{Read, Seek, SeekFrom};
     let mut file = std::fs::File::open(path).ok()?;
@@ -2185,6 +2302,7 @@ fn read_moov_bytes(path: &Path) -> Option<(u64, Vec<u8>)> {
     Some((off, buf))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn cache_cenc_state(path: &Path) -> CacheCencState {
     match read_moov_bytes(path) {
         Some((_, moov)) => {
@@ -2201,11 +2319,14 @@ fn cache_cenc_state(path: &Path) -> CacheCencState {
 /// Per-file CENC index cache: range requests from a player arrive in
 /// bursts, and re-reading the moov for each one would be wasteful. Keyed by
 /// path and invalidated by (length, mtime), which a re-download changes.
+#[cfg(not(target_arch = "wasm32"))]
 type CencIndexCache =
     std::sync::Mutex<HashMap<PathBuf, (u64, std::time::SystemTime, Arc<CencIndex>)>>;
 
+#[cfg(not(target_arch = "wasm32"))]
 static CENC_INDEX_CACHE: OnceLock<CencIndexCache> = OnceLock::new();
 
+#[cfg(not(target_arch = "wasm32"))]
 fn cenc_index_for_file(path: &Path) -> Result<Option<Arc<CencIndex>>, String> {
     let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
     let len = meta.len();
@@ -2235,6 +2356,7 @@ fn cenc_index_for_file(path: &Path) -> Result<Option<Arc<CencIndex>>, String> {
 /// only the requested range. Returns `None` for anything that is not an
 /// encrypted MP4 with a sidecar key question to answer — the caller falls
 /// back to the plain static file path (clear MP4s, manga images, ...).
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) async fn serve_src_file(
     src_dir: &str,
     rest: &str,
@@ -2341,9 +2463,12 @@ pub(crate) async fn serve_src_file(
 // nothing here may fail core init.
 // ---------------------------------------------------------------------------
 
+#[cfg(not(target_arch = "wasm32"))]
 const CACHE_FORMAT_MARKER: &str = ".cachefmt-v2";
+#[cfg(not(target_arch = "wasm32"))]
 const CACHE_FORMAT_PENDING: &str = ".cachefmt-v2-pending";
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn migrate_plaintext_video_cache(src_dir: &Path) {
     let marker = src_dir.join(CACHE_FORMAT_MARKER);
     let pending_path = src_dir.join(CACHE_FORMAT_PENDING);
@@ -2606,7 +2731,7 @@ pub struct CencIndex {
 /// whole file, the moov offset for a moov-only slice); sample-data offsets
 /// come from `stco`/`co64` values and are absolute either way. Returns `None`
 /// when no track carries an encrypted sample entry.
-fn build_cenc_index(
+pub(crate) fn build_cenc_index(
     data: &[u8],
     base_off: u64,
     file_len: u64,
@@ -2703,48 +2828,52 @@ fn build_cenc_index(
     Ok(Some(index))
 }
 
-/// Records the rewrites `rewrite_encrypted_sample_entries` used to apply in
-/// place (encv -> hvc1, enca -> mp4a, `sinf` blanked into a `free` box) as
-/// offset patches instead, so the file on disk keeps its original bytes.
+/// Restores the original sample-entry codec and removes the protection box.
 fn collect_sample_entry_patches(
     data: &[u8],
     boxes: &HashMap<[u8; 4], Vec<Mp4Box>>,
     base_off: u64,
     out: &mut Vec<CencPatch>,
 ) {
-    for (typ, replacement) in [(b"encv", b"hvc1"), (b"enca", b"mp4a")] {
-        let Some(list) = boxes.get(typ) else {
+    for (encrypted, fallback) in [(b"encv", b"hvc1"), (b"enca", b"mp4a")] {
+        let Some(entries) = boxes.get(encrypted) else {
             continue;
         };
-        for b in list {
-            if b.off + 8 <= data.len() {
-                out.push(CencPatch {
-                    off: base_off + (b.off + 4) as u64,
-                    bytes: replacement.to_vec(),
+        for entry in entries {
+            let protection =
+                box_children_start(encrypted, entry.off, entry.header).and_then(|start| {
+                    iter_boxes(data, start, entry.off + entry.size)
+                        .into_iter()
+                        .find(|child| child.typ == *b"sinf")
                 });
-            }
-            let Some(child_start) = box_children_start(typ, b.off, b.header) else {
-                continue;
-            };
-            for child in iter_boxes(data, child_start, b.off + b.size) {
-                if child.typ == *b"sinf" {
-                    let mut header = Vec::with_capacity(8);
-                    header.extend_from_slice(&8u32.to_be_bytes());
-                    header.extend_from_slice(b"free");
-                    out.push(CencPatch {
-                        off: base_off + child.off as u64,
-                        bytes: header,
-                    });
-                    let start = child.off + 8;
-                    let end = (child.off + child.size).min(data.len());
-                    if start < end {
-                        out.push(CencPatch {
-                            off: base_off + start as u64,
-                            bytes: vec![0u8; end - start],
-                        });
-                    }
-                    break;
-                }
+            let codec = protection
+                .and_then(|protection| {
+                    iter_boxes(
+                        data,
+                        protection.off + protection.header,
+                        protection.off + protection.size,
+                    )
+                    .into_iter()
+                    .find(|child| child.typ == *b"frma")
+                })
+                .and_then(|format| data.get(format.off + format.header..format.off + format.size))
+                .filter(|format| format.len() == 4 && *format != b"encv" && *format != b"enca")
+                .unwrap_or(fallback);
+            out.push(CencPatch {
+                off: base_off + (entry.off + 4) as u64,
+                bytes: codec.to_vec(),
+            });
+            if let Some(protection) = protection {
+                // Keep the box length intact so media parsers still see the
+                // siblings that follow it, including codec configuration.
+                out.push(CencPatch {
+                    off: base_off + (protection.off + 4) as u64,
+                    bytes: b"free".to_vec(),
+                });
+                out.push(CencPatch {
+                    off: base_off + (protection.off + protection.header) as u64,
+                    bytes: vec![0; protection.size - protection.header],
+                });
             }
         }
     }
@@ -2818,8 +2947,8 @@ pub(crate) fn apply_cenc_index(
 /// path is validated against: it produces exactly the bytes the per-range
 /// path serves. Only tests call it now — production never decrypts a whole
 /// file — so it is compiled for tests only.
-#[cfg(test)]
-fn decrypt_cenc_mp4(data: &mut [u8], content_key: &[u8]) -> Result<(), String> {
+#[cfg(any(test, target_arch = "wasm32"))]
+pub(crate) fn decrypt_cenc_mp4(data: &mut [u8], content_key: &[u8]) -> Result<(), String> {
     if content_key.len() != 16 && content_key.len() != 24 && content_key.len() != 32 {
         return Err("invalid CENC content key length".to_string());
     }

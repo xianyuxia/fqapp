@@ -64,6 +64,7 @@ AudioSource parsePlayinfoSource(
   required String itemId,
   required String baseUrl,
   String toneId = '0',
+  bool preferBackup = false,
 }) {
   final streams = _checkedMediaObjects(payload).last['data'];
   if (streams is! List) throw const FormatException('未获取到音频地址');
@@ -86,9 +87,11 @@ AudioSource parsePlayinfoSource(
       // Older direct responses need no model, but any supplied encryption
       // metadata must still be usable. A malformed model is not a plain URL.
       final keyHex = _streamContentKey(stream['encrypt_info']);
-      final url =
-          _mediaUrl(stream['main_url'], baseUrl) ??
-          _mediaUrl(stream['backup_url'], baseUrl);
+      final main = _mediaUrl(stream['main_url'], baseUrl);
+      final backup = _mediaUrl(stream['backup_url'], baseUrl);
+      final url = preferBackup && keyHex?.isNotEmpty == true
+          ? backup ?? main
+          : main ?? backup;
       if (keyHex == null || url == null) continue;
       return AudioSource(
         itemId: itemId,
@@ -106,7 +109,7 @@ AudioSource parsePlayinfoSource(
         message is String && message.isNotEmpty ? message : '音频资源暂不可用',
       );
     }
-    final selected = _playinfoStream(stream, model, baseUrl);
+    final selected = _playinfoStream(stream, model, baseUrl, preferBackup);
     if (selected == null) continue;
     return AudioSource(
       itemId: itemId,
@@ -137,6 +140,7 @@ Map<String, dynamic>? _playinfoModel(dynamic raw) {
   Map<dynamic, dynamic> row,
   Map<String, dynamic> model,
   String baseUrl,
+  bool preferBackup,
 ) {
   final streams = model['video_list'];
   if (streams is! List) return null;
@@ -150,7 +154,8 @@ Map<String, dynamic>? _playinfoModel(dynamic raw) {
       if (url != null) candidates.add((url: url, keyHex: keyHex));
     }
   }
-  for (final field in ['main_url', 'backup_url']) {
+  final outerFields = preferBackup ? ['backup_url', 'main_url'] : ['main_url', 'backup_url'];
+  for (final field in outerFields) {
     final preferred = _mediaUrl(row[field], baseUrl);
     if (preferred == null) continue;
     for (final candidate in candidates) {
@@ -163,7 +168,7 @@ Map<String, dynamic>? _playinfoModel(dynamic raw) {
 Duration? _playinfoDuration(dynamic seconds) {
   if (seconds is! num || !seconds.isFinite || seconds <= 0) return null;
   final microseconds = seconds.toDouble() * Duration.microsecondsPerSecond;
-  if (!microseconds.isFinite || microseconds >= 9223372036854775807) {
+  if (!microseconds.isFinite || microseconds >= 9223372036854775808.0) {
     return null;
   }
   return Duration(microseconds: microseconds.round());
@@ -240,7 +245,7 @@ AudioSource _parseAudioPlayback(
             microseconds != null &&
                 microseconds.isFinite &&
                 microseconds > 0 &&
-                microseconds < 9223372036854775807
+                microseconds < 9223372036854775808.0
             ? Duration(microseconds: microseconds.round())
             : null;
         return AudioSource(

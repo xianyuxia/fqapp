@@ -1,9 +1,11 @@
+import '../services/browser_player.dart';
 import '../services/desktop_platform.dart';
 import '../services/audio_floating_routes.dart';
 import '../services/app_log.dart';
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:material_ui/material_ui.dart';
 
 import '../models/audio_extra.dart' show RelatedWork;
@@ -1389,7 +1391,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   resumeEpisodeIndex(saved, widget.eps) == index) &&
               requestedMs.isFinite &&
               requestedMs > 0 &&
-              requestedMs < 0x7fffffffffffffff &&
+              requestedMs < 9223372036854775808.0 &&
               (savedDuration <= 0 || requestedMs < savedDuration * 1000)
           ? requestedMs.round()
           : null;
@@ -1833,7 +1835,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           : null,
       // 离线缓存（官方 `jm3.u`）：面板行 → 选集下载弹窗（弹窗头部可进
       // 管理页）。feed 面板未接（保持占位）。
-      onOpenOfflineCache: widget.shortSeries && widget.eps.isNotEmpty
+      onOpenOfflineCache: !kIsWeb && widget.shortSeries && widget.eps.isNotEmpty
           ? () => unawaited(_openDownloadSheet())
           : null,
       // 官方 `oi3/k.P()` 门：上游只有单流时不显示清晰度行。
@@ -1884,7 +1886,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       relateBook: _relateBook,
       onOpenRelateBook: _relateBook == null ? null : _openOriginalBook,
       onOpenListenMode: hasEpisodes ? () => unawaited(_openListenMode()) : null,
-      onOpenDownload: hasEpisodes
+      onOpenDownload: !kIsWeb && hasEpisodes
           ? () => unawaited(_openDownloadSheet())
           : null,
       // 分屏里发评论/加载分页后，页面的评论入口计数（整屏右栏与热评弹窗）
@@ -2005,7 +2007,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                     texture,
                     key: const ValueKey('player-texture'),
                   )
-                : Texture(
+                : browserMediaAvailable
+                    ? browserVideo(texture)
+                    : Texture(
                     key: const ValueKey('player-texture'),
                     textureId: texture,
                   ),

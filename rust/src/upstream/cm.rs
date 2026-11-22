@@ -11,6 +11,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 // Hold the permit inside the blocking task: cancelling its caller cannot
 // stop a running modpow and must not free the slot prematurely.
+#[cfg(not(target_arch = "wasm32"))]
 static CM_WORK: once_cell::sync::Lazy<Arc<tokio::sync::Semaphore>> =
     once_cell::sync::Lazy::new(|| Arc::new(tokio::sync::Semaphore::new(2)));
 
@@ -58,6 +59,7 @@ pub struct CM {
 }
 
 impl CM {
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn new_off_thread() -> Result<Self, String> {
         let permit = Arc::clone(&CM_WORK)
             .acquire_owned()
@@ -69,6 +71,11 @@ impl CM {
         })
         .await
         .map_err(|e| format!("cm init task failed: {e}"))?
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub async fn new_off_thread() -> Result<Self, String> {
+        Self::new()
     }
 
     pub fn new() -> Result<Self, String> {
@@ -158,6 +165,7 @@ impl CM {
     }
 
     /// Keep decrypt and its CPU-heavy consumer in one bounded blocking task.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn process_off_thread<T, F>(self: &Arc<Self>, process: F) -> Result<T, String>
     where
         T: Send + 'static,
@@ -185,6 +193,15 @@ impl CM {
             Ok(result) => result,
             Err(error) => Err(format!("decrypt task failed: {error}")),
         }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) async fn process_off_thread<T, F>(self: &Arc<Self>, process: F) -> Result<T, String>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Self) -> Result<T, String> + Send + 'static,
+    {
+        process(self)
     }
 }
 

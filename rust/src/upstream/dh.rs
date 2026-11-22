@@ -140,6 +140,7 @@ pub fn decrypt_dh_content(
 ///
 /// The state is cloned into the blocking task (a per-request value, zeroized
 /// when that task drops it); the caller's copy is untouched.
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn decrypt_dh_content_off_thread(
     server_y_b64: &str,
     content_b64: &str,
@@ -156,4 +157,14 @@ pub async fn decrypt_dh_content_off_thread(
         Ok(result) => result,
         Err(error) => Err(format!("dh decrypt task failed: {error}")),
     }
+}
+
+
+#[cfg(target_arch = "wasm32")]
+pub async fn decrypt_dh_content_off_thread(
+    server_y_b64: &str,
+    content_b64: &str,
+    st: &DHState,
+) -> Result<Vec<u8>, String> {
+    decrypt_dh_content(server_y_b64, content_b64, st)
 }

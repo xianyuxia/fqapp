@@ -1,4 +1,4 @@
-import 'dart:isolate';
+import 'run_parser.dart';
 
 import '../models/audio_extra.dart';
 import '../models/audio_time_track.dart';
@@ -174,7 +174,7 @@ class SubtitleSynthesis {
     if (text.length < isolateThreshold) {
       return Future.value(splitSentences(text));
     }
-    return Isolate.run(() => splitSentences(text));
+    return runParser(() => splitSentences(text));
   }
 
   /// 把超过 [maxSentenceChars] 的句子在次要标点处切开，分隔符留在前一段。

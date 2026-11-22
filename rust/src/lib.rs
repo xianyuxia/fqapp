@@ -17,23 +17,33 @@
 // See docs/migration/rust-migration-contracts.md for the behaviour contract and
 // docs/rust-migration-progress.md for the current verification state.
 
+#[cfg(not(target_arch = "wasm32"))]
 pub mod api;
 pub mod config;
 pub mod core_log;
 pub mod crypto;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod device;
+#[cfg(target_arch = "wasm32")]
+#[path = "device/web.rs"]
 pub mod device;
 pub mod dispatch;
 pub mod endpoints;
 pub mod error;
 pub mod filter;
 pub mod json;
+#[cfg(not(target_arch = "wasm32"))]
 mod network;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod server;
 pub mod sign;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod static_files;
 pub mod timeutil;
+mod runtime;
 pub mod upstream;
 
+#[cfg(not(target_arch = "wasm32"))]
 mod frb_generated;
 
 #[cfg(test)]
@@ -43,3 +53,6 @@ mod network_proxy_tests;
 mod desktop_fetch;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 mod desktop_media;
+
+#[cfg(target_arch = "wasm32")]
+mod web;

@@ -1,7 +1,11 @@
 //! 书旗正文：免签 CDN 主路 + `chapterinfo` 加密口兜底。
 
 use std::future::Future;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use crate::runtime::Instant;
 
 use futures::future::BoxFuture;
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -45,7 +49,7 @@ where
     let mut pending = FuturesUnordered::new();
     for (label, attempt) in attempts {
         pending.push(async move {
-            match tokio::time::timeout(timeout, attempt).await {
+            match crate::runtime::timeout(timeout, attempt).await {
                 Ok(Ok(value)) => Ok(value),
                 Ok(Err(err)) => Err(format!("{label}: {err}")),
                 Err(_) => Err(format!("{label}: timed out after {timeout:?}")),
@@ -95,7 +99,7 @@ async fn chapterinfo_payload(
     budget: Duration,
     cdn_note: &str,
 ) -> ApiResult<Value> {
-    let payload = match tokio::time::timeout(
+    let payload = match crate::runtime::timeout(
         left,
         post_enc(
             ctx,

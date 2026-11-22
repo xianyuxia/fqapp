@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:flutter/painting.dart' show PaintingBinding;
 import 'package:material_ui/material_ui.dart';
 
 import '../sliding_tab_indicator.dart';
@@ -92,6 +93,7 @@ class _ClassicHomeTabBarState extends State<ClassicHomeTabBar> {
   TextScaler? _measuredScaler;
   TextStyle? _measuredStyle;
   TextDirection? _measuredDirection;
+  Locale? _measuredLocale;
   double _rowHeight = ClassicHomeTabBar.barHeight;
 
   /// 居中/下划线都要用的标签中心，几何不变时复用。
@@ -102,6 +104,7 @@ class _ClassicHomeTabBarState extends State<ClassicHomeTabBar> {
   @override
   void initState() {
     super.initState();
+    PaintingBinding.instance.systemFonts.addListener(_handleFontChange);
     // 首帧可能带着非 0 的初始选中（深链直达某分类），布局后居中一次。
     _scheduleCenter();
   }
@@ -123,8 +126,18 @@ class _ClassicHomeTabBarState extends State<ClassicHomeTabBar> {
 
   @override
   void dispose() {
+    PaintingBinding.instance.systemFonts.removeListener(_handleFontChange);
     _scroll.dispose();
     super.dispose();
+  }
+
+  void _handleFontChange() {
+    // Web CJK fallback can arrive after the first measurement. The Text
+    // widgets relayout on their own, but the cached tab widths must too.
+    setState(() {
+      _measuredCategories = null;
+      _centerPending = true;
+    });
   }
 
   void _scheduleCenter() {
@@ -198,20 +211,24 @@ class _ClassicHomeTabBarState extends State<ClassicHomeTabBar> {
     // 不缓存的话就是每帧 6 次 TextPainter 排版。
     final labelStyle = _labelStyle(true, palette);
     final direction = Directionality.of(context);
+    final locale = Localizations.maybeLocaleOf(context);
     if (!identical(_measuredCategories, categories) ||
         _measuredScaler != scaler ||
         _measuredStyle != labelStyle ||
-        _measuredDirection != direction) {
+        _measuredDirection != direction ||
+        _measuredLocale != locale) {
       _measuredCategories = categories;
       _measuredScaler = scaler;
       _measuredStyle = labelStyle;
       _measuredDirection = direction;
+      _measuredLocale = locale;
       final widths = <double>[];
       var rowHeight = ClassicHomeTabBar.barHeight;
       for (final category in categories) {
         final painter = TextPainter(
           text: TextSpan(text: category.label, style: labelStyle),
           textDirection: direction,
+          locale: locale,
           textScaler: scaler,
           maxLines: 1,
         )..layout();

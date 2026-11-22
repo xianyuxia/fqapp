@@ -3,7 +3,8 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:hive_ce/hive.dart';
 
-import 'native_secure_key_storage.dart';
+import 'native_secure_key_storage.dart'
+    if (dart.library.js_interop) 'web_secure_key_storage.dart';
 import 'secure_key_storage.dart';
 
 export 'secure_key_storage.dart';

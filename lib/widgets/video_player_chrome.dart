@@ -13,6 +13,7 @@ import '../models/media_item.dart';
 import '../services/episode_source_cache.dart';
 import '../services/haptic_preferences.dart';
 import '../services/native_player.dart';
+import '../services/browser_player.dart';
 import '../services/playback_format.dart';
 import '../services/playback_gesture_levels.dart';
 import '../services/player_layout_preferences.dart';
@@ -41,6 +42,7 @@ import 'player/player_split_panel.dart' show SplitPanelAxis;
 import 'player/player_toast.dart';
 import 'player/player_video_layout.dart';
 import 'player/story_seek_bar.dart';
+import 'player/browser_video_controls.dart';
 
 part 'video_player_landscape_seek.dart';
 
@@ -638,7 +640,8 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
     // 模式条件（T9/is_listen_mode）本客户端不存在。Z5 的「每 holder 一次」
     // = 每个播放页实例一次（initState 天然满足）。旧底栏栏内无出口，
     // 退出走更多面板的「退出清屏」行。
-    if (widget.shortSeries &&
+    if (!browserMediaAvailable &&
+        widget.shortSeries &&
         !widget.newPlayerBottomStyle &&
         !widget.hasBanner &&
         !widget.reverseClearScreen) {
@@ -2182,6 +2185,15 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
     }
   }
 
+  Future<void> _openFullscreen() async {
+    if (browserMediaAvailable &&
+        !_fullScreen &&
+        await openBrowserVideoFullscreen(widget.player?.textureId)) {
+      return;
+    }
+    if (mounted) await _toggleFullScreen();
+  }
+
   Future<void> _toggleFullScreen({bool backToPortrait = false}) async {
     _endBoost();
     _cancelSeek();
@@ -2518,6 +2530,10 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
         !landscape;
     // 短剧横屏底条（批次四）：官方 `c0i.xml` + `cw7.xml` 的形态，
     // 替换通用运输条在此朝向的全部残留（prev/±10/全屏钮）。
+    final browserControls = browserMediaAvailable && widget.shortSeries;
+    final portraitInsets = browserControls && !landscape && !compact
+        ? insets.copyWith(bottom: insets.bottom + 54)
+        : insets;
     final landscapeBar = !compact && widget.shortSeries && landscape;
     // 自动收起保留信息区，清屏则统一隐藏；计时器不是清屏状态来源。
     // 竖屏全屏例外：用户点「全屏观看」要的是整块画面，收起后连信息带
@@ -2780,7 +2796,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
         ],
         if (catalogStyle && (controls || bandVisible))
           _portraitControls(
-            insets: insets,
+            insets: portraitInsets,
             videoBottom: layout.video.intersect(layout.viewport).bottom,
             controls: controls,
             hotBar: hotBar,
@@ -2795,7 +2811,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
             left: insets.left,
             right: insets.right,
             bottom:
-                insets.bottom +
+                portraitInsets.bottom +
                 (widget.shortSeries ? (landscape ? 16 : 56) : 96),
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -2827,11 +2843,12 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
             ),
           ),
         if (portraitBrowse && (controls || bandVisible))
-          _catalogBar(insets, compact: catalogStyle),
+          _catalogBar(portraitInsets, compact: catalogStyle),
         // 短剧竖屏全屏没有横屏底条，出口只剩顶栏返回（3 秒后随控件收起）；
         // 补一个控件可见时的显式「退出全屏」，位置沿用进度条下方那条贴底的
         // 窄带（`insets.bottom + 8`）。通用播放器的运输条自带同名按钮，排除。
         if (widget.shortSeries &&
+            !browserControls &&
             !landscape &&
             _fullScreen &&
             controls &&
@@ -2845,17 +2862,20 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
         // 播放器（详情页影视）在用，短剧两个朝向都不走它。
         if (!compact && controls && _ready && !widget.shortSeries)
           _transport(insets, landscape),
-        if (landscapeBar && _ready && showChrome && (_visible || _seeking))
+        if (landscapeBar &&
+            _ready &&
+            showChrome &&
+            (browserControls || _visible || _seeking))
           _landscapeBar(insets),
         // 右侧黑边里的「下一集」卡：只在画面居中完整显示、黑边够宽时出现
         // （B站横屏同款；番茄官方横屏没有这一项）。
         if (landscapeBar && _ready && showChrome && (_visible || _seeking))
           _nextEpisodeCard(window: window, insets: insets),
         if (!compact &&
-            (_visible || _seeking || bandVisible) &&
             showChrome &&
-            _ready &&
-            !landscapeBar)
+            !landscapeBar &&
+            (browserControls ||
+                (_ready && (_visible || _seeking || bandVisible))))
           Positioned(
             // Controls leave this Stack while seeking. Keep the outer
             // layer keyed so the active drag recognizer survives that
@@ -2866,27 +2886,42 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
             // 新栏的 30dp 进度触区止于选集/清屏的 48dp 触区上沿。
             bottom:
                 insets.bottom +
-                (catalogStyle ? 60 : (widget.shortSeries ? 41 : 60)),
+                (browserControls
+                    ? 6
+                    : catalogStyle
+                    ? 60
+                    : (widget.shortSeries ? 41 : 60)),
             child: RepaintBoundary(
               child: ListenableBuilder(
                 listenable: _timeline,
-                builder: (context, child) => StorySeekBar(
-                  key: const ValueKey('video-seek'),
-                  value: _progressValue,
-                  enabled: durationMs > 0,
-                  seeking: _seeking,
-                  onStart: _startSeek,
-                  onChanged: (value) => _seekValue.value = value,
-                  onEnd: (value) => unawaited(_finishSeek(value)),
-                  onCancel: _cancelSeek,
-                  trackWidth: catalogStyle ? 4 : 2,
-                  progressColor: widget.shortSeries
-                      ? const Color(0xFFFA6725)
-                      : Colors.white,
-                  trackColor: widget.shortSeries
-                      ? const Color(0x4DFFFFFF)
-                      : Colors.white24,
-                ),
+                builder: (context, child) {
+                  final seekBar = StorySeekBar(
+                    key: const ValueKey('video-seek'),
+                    value: _progressValue,
+                    enabled: _ready && durationMs > 0,
+                    seeking: _seeking,
+                    onStart: _startSeek,
+                    onChanged: (value) => _seekValue.value = value,
+                    onEnd: (value) => unawaited(_finishSeek(value)),
+                    onCancel: _cancelSeek,
+                    trackWidth: catalogStyle ? 4 : 2,
+                    progressColor: widget.shortSeries
+                        ? const Color(0xFFFA6725)
+                        : Colors.white,
+                    trackColor: widget.shortSeries
+                        ? const Color(0x4DFFFFFF)
+                        : Colors.white24,
+                  );
+                  return browserControls
+                      ? BrowserVideoControls(
+                          playing: _playbackRequested,
+                          onTogglePlayback: _ready ? _togglePlayback : null,
+                          onFullscreen: _ready ? _openFullscreen : null,
+                          seekBar: seekBar,
+                          fullscreen: _fullScreen,
+                        )
+                      : seekBar;
+                },
               ),
             ),
           ),
@@ -2897,19 +2932,33 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
         if (_ready &&
             !_playbackRequested &&
             showChrome &&
-            _visible &&
+            (browserControls || _visible) &&
             !_seeking)
           Positioned.fromRect(
             rect: layout.viewport,
-            child: IgnorePointer(
-              child: Center(
-                child: Icon(
-                  Icons.play_arrow_rounded,
-                  size: 86,
-                  color: Colors.white.withValues(alpha: .2),
-                ),
-              ),
-            ),
+            child: browserControls
+                ? Center(
+                    child: IconButton.filled(
+                      key: const ValueKey('browser-resume-playback'),
+                      tooltip: '继续播放',
+                      onPressed: _togglePlayback,
+                      style: IconButton.styleFrom(
+                        backgroundColor: const Color(0xB3000000),
+                        foregroundColor: Colors.white,
+                        minimumSize: const Size.square(60),
+                      ),
+                      icon: const Icon(Icons.play_arrow_rounded, size: 34),
+                    ),
+                  )
+                : IgnorePointer(
+                    child: Center(
+                      child: Icon(
+                        Icons.play_arrow_rounded,
+                        size: 86,
+                        color: Colors.white.withValues(alpha: .2),
+                      ),
+                    ),
+                  ),
           ),
         if (_seeking)
           Center(
@@ -3066,7 +3115,10 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
         ],
         _lockButton(window, insets),
         // 分屏视频盒的底部紧凑条：时间/进度 + 播放/下一集/倍速/全屏。
-        if (compact && _ready && showChrome && (_visible || _seeking))
+        if (compact &&
+            _ready &&
+            showChrome &&
+            (browserControls || _visible || _seeking))
           _compactBar(),
         // 上下滑亮度/音量的档位 HUD：用独立 notifier 刷新，拖动期间不重建
         // 画面与控件。
@@ -3729,7 +3781,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
                     'compact-fullscreen',
                     Icons.fullscreen_rounded,
                     '全屏',
-                    _toggleFullScreen,
+                    _openFullscreen,
                   ),
                 ],
               ),
@@ -4139,7 +4191,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
   Widget _fullscreenPill() => PlayletFullscreenPill(
     fullScreen: _fullScreen,
     shortSeries: widget.shortSeries,
-    onTap: _toggleFullScreen,
+    onTap: _openFullscreen,
   );
 
   /// 新栏由 `_portraitControls` 分开定位全屏按钮与信息区；旧栏和通用
@@ -4417,7 +4469,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
           _transportButton(
             _fullScreen ? '退出全屏' : '全屏',
             _fullScreen ? Icons.fullscreen_exit : Icons.fullscreen,
-            _toggleFullScreen,
+            _openFullscreen,
           ),
         ],
       ),
@@ -4553,6 +4605,14 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
                   _togglePlayback,
                   minSize: 40,
                 ),
+                if (browserMediaAvailable)
+                  _landIconButton(
+                    'landscape-browser-fullscreen',
+                    Icons.fullscreen_rounded,
+                    '全屏',
+                    _openFullscreen,
+                    minSize: 40,
+                  ),
                 const SizedBox(width: 8),
                 if (widget.episodes.length > 1)
                   _landIconButton(

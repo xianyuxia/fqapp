@@ -1,3 +1,4 @@
+import 'shelf_local_svg.dart';
 import 'dart:io';
 
 import 'package:cached_network_image/cached_network_image.dart';
@@ -216,7 +217,7 @@ class ShelfCoverImage extends StatelessWidget {
       if (file == null) {
         art = placeholder;
       } else if (_isSvgPath(value)) {
-        art = SvgPicture.file(
+        art = shelfLocalSvg(
           file,
           fit: fit,
           placeholderBuilder: (_) => placeholder,

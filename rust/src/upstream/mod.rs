@@ -5,6 +5,10 @@ pub mod client;
 pub mod cm;
 pub mod dh;
 pub mod http;
+#[cfg(not(target_arch = "wasm32"))]
+mod http_native;
+#[cfg(target_arch = "wasm32")]
+mod http_web;
 pub mod shuqi;
 
 pub use client::{ClientError, PinnedDevice, UpstreamClient, UpstreamRequest};

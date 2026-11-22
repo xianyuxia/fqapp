@@ -5,22 +5,22 @@
 /// pages only deal with stable, typed values.
 library;
 
-import 'dart:isolate';
+import '../services/run_parser.dart';
 
 bool isVideoKind(String kind) => kind == 'video' || kind == 'manju';
 
 /// Runs [parseMediaItems] on a background isolate so deep recursive payload
 /// traversal never janks the UI thread.
 Future<List<MediaItem>> parseMediaItemsAsync(Map<String, dynamic> payload) =>
-    Isolate.run(() => parseMediaItems(payload));
+    runParser(() => parseMediaItems(payload));
 
 /// Runs [parseSearchTabs] on a background isolate.
 Future<List<SearchTab>> parseSearchTabsAsync(Map<String, dynamic> payload) =>
-    Isolate.run(() => parseSearchTabs(payload));
+    runParser(() => parseSearchTabs(payload));
 
 /// Runs [parseDirectory] on a background isolate (large chapter lists).
 Future<List<List<Chapter>>> parseDirectoryAsync(Map<String, dynamic> payload) =>
-    Isolate.run(() => parseDirectory(payload));
+    runParser(() => parseDirectory(payload));
 
 class MediaItem {
   static final _videoRe = RegExp(r'短剧|短片|剧集|video|drama', caseSensitive: false);

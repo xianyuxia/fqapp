@@ -13,6 +13,7 @@ extension _PlayerPagePreload on _PlayerPageState {
   /// 限 Wi-Fi、限 5 集，并且只保留最近的一段（见 [_trimAutoCache]）。
   /// 用户手动下载的一律不碰：那批记录的 `auto` 是 false。
   void _scheduleAutoCache(NativePlayer player) {
+    if (kIsWeb) return;
     if (!widget.shortSeries || widget.bookId.isEmpty) return;
     if (_autoCacheFor == _index) return;
     // 同一集的首帧会来好几次（起播、换流、重试），别每次都把 2 秒推后。

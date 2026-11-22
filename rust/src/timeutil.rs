@@ -3,6 +3,7 @@
 //! Go formats pool timestamps with the local zone; the migration contract
 //! allows volatile time fields to differ, so UTC is used consistently.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
@@ -28,17 +29,20 @@ pub fn format_unix(secs: i64) -> String {
 }
 
 pub fn now_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+    now_millis() / 1000
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn now_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn now_millis() -> i64 {
+    js_sys::Date::now() as i64
 }
 
 pub fn now_string() -> String {

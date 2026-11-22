@@ -1,4 +1,5 @@
-import '../native_secure_key_storage.dart';
+import '../native_secure_key_storage.dart'
+    if (dart.library.js_interop) '../web_secure_key_storage.dart';
 import '../secure_key_provider.dart';
 
 /// API keys live only in platform secure storage. The settings box stores a

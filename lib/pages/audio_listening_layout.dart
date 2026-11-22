@@ -461,7 +461,7 @@ extension _AudioListeningLayout on _AudioPageState {
       key: 'audio_download',
       icon: real ? LucideIcons.download : LucideIcons.list_end,
       label: '下载',
-      onTap: _showDownload,
+      onTap: kIsWeb ? null : _showDownload,
     ),
     AudioIconAction(
       key: 'audio_chapter_comment',

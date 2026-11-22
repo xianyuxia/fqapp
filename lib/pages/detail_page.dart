@@ -4,6 +4,7 @@ import 'dart:async';
 
 import 'package:cupertino_ui/cupertino_ui.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/services.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
 
@@ -720,7 +721,7 @@ class _DetailPageState extends State<DetailPage> {
                 ? CupertinoIcons.cloud_download
                 : CupertinoIcons.arrow_down_circle,
             label: '缓存图书',
-            onPressed: _showDownloadSheet,
+            onPressed: kIsWeb ? null : _showDownloadSheet,
           ),
         if (_downloadProgress case final progress?)
           Padding(

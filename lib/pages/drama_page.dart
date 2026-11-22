@@ -1,8 +1,11 @@
+import '../services/browser_player.dart';
+import '../widgets/player/browser_video_controls.dart';
 import '../widgets/video_player_chrome.dart';
 import '../services/desktop_platform.dart';
 
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 
@@ -1141,7 +1144,7 @@ class _DramaPageState extends ConsumerState<DramaPage>
               onOpenListenMode: _inline.episodes.isNotEmpty
                   ? () => unawaited(_openFeedListenMode())
                   : null,
-              onOpenOfflineCache: _inline.episodes.isNotEmpty
+              onOpenOfflineCache: !kIsWeb && _inline.episodes.isNotEmpty
                   ? () => unawaited(_openFeedDownloadSheet())
                   : null,
             );
@@ -2113,7 +2116,7 @@ class _DramaPageState extends ConsumerState<DramaPage>
                   onOpenSeriesDetail: () => _openSeriesDetail(item),
                   onComments: () =>
                       PlayletCommentPanel.show(context, seriesId: item.id),
-                  onOpenOfflineCache: _inline.episodes.isEmpty
+                  onOpenOfflineCache: kIsWeb || _inline.episodes.isEmpty
                       ? null
                       : () => unawaited(_openFeedDownloadSheet()),
                   onOpenListenMode: _inline.episodes.isEmpty
@@ -3056,7 +3059,32 @@ class _DramaFeedCard extends StatelessWidget {
             left: 0,
             right: 0,
             bottom: bottomInset,
-            child: _SeekBar(playback: playback!),
+            child: browserMediaAvailable
+                ? Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    child: ListenableBuilder(
+                      listenable: Listenable.merge([
+                        playback!.playing,
+                        playback!.textureId,
+                      ]),
+                      builder: (context, _) {
+                        final id = playback!.textureId.value;
+                        if (id == null) return const SizedBox.shrink();
+                        return BrowserVideoControls(
+                          playing: playback!.playing.value,
+                          onTogglePlayback: onTogglePlay,
+                          onFullscreen: () async {
+                            if (!await openBrowserVideoFullscreen(id) &&
+                                context.mounted) {
+                              onFullscreen?.call();
+                            }
+                          },
+                          seekBar: _SeekBar(playback: playback!),
+                        );
+                      },
+                    ),
+                  )
+                : _SeekBar(playback: playback!),
           ),
         // 官方「取消静音」药丸（feed 变体 `mq3.c` + `bvf.xml`，108×36dp 展开），
         // 不是播放页的 `ck8.xml` 变体（12sp+16dp lottie、3s 定时）。官方出厂
@@ -3084,7 +3112,9 @@ class _DramaFeedCard extends StatelessWidget {
           Positioned(
             left: 12,
             right: 12,
-            bottom: bottomInset + 16,
+            bottom:
+                bottomInset +
+                (browserMediaAvailable && playback != null ? 52 : 16),
             child: _InfoPanel(
               item: item,
               playback: playback,
@@ -4285,6 +4315,8 @@ class _InlineVideoLayer extends StatelessWidget {
                               textureId,
                               key: ValueKey('drama_inline_${item.id}'),
                             )
+                          : browserMediaAvailable
+                          ? browserVideo(textureId)
                           : Texture(
                               key: ValueKey(
                                 'drama_inline_texture_${item.kind}_${item.id}',

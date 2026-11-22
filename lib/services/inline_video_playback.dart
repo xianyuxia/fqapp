@@ -411,7 +411,7 @@ class InlineVideoPlayback {
       final startMs =
           requestedMs.isFinite &&
               requestedMs > 0 &&
-              requestedMs < 0x7fffffffffffffff &&
+              requestedMs < 9223372036854775808.0 &&
               (startPosition != null ||
                   !savedDuration.isFinite ||
                   savedDuration <= 0 ||
